@@ -61,3 +61,6 @@ TESTS += erofs/011
 # 013 - check if hardlinked directories are allowed
 TESTS += erofs/013
 
+# 014 - check if cross-device submounts are handled properly
+TESTS += erofs/014
+
