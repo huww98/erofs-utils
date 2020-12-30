@@ -20,7 +20,10 @@
  * be incompatible with this kernel version.
  */
 #define EROFS_FEATURE_INCOMPAT_LZ4_0PADDING	0x00000001
-#define EROFS_ALL_FEATURE_INCOMPAT		EROFS_FEATURE_INCOMPAT_LZ4_0PADDING
+#define EROFS_FEATURE_INCOMPAT_BIG_PCLUSTER	0x00000002
+#define EROFS_ALL_FEATURE_INCOMPAT	\
+	(EROFS_FEATURE_INCOMPAT_LZ4_0PADDING | \
+	 EROFS_FEATURE_INCOMPAT_BIG_PCLUSTER)
 
 /* 128-byte erofs on-disk super block */
 struct erofs_super_block {
@@ -201,10 +204,11 @@ enum {
  * bit 0 : COMPACTED_2B indexes (0 - off; 1 - on)
  *  e.g. for 4k logical cluster size,      4B        if compacted 2B is off;
  *                                  (4B) + 2B + (4B) if compacted 2B is on.
+ * bit 1 : HEAD1 big pcluster (0 - off; 1 - on)
+ * bit 2 : (reserved now) HEAD2 big pcluster (0 - off; 1 - on)
  */
-#define Z_EROFS_ADVISE_COMPACTED_2B_BIT         0
-
-#define Z_EROFS_ADVISE_COMPACTED_2B     (1 << Z_EROFS_ADVISE_COMPACTED_2B_BIT)
+#define Z_EROFS_ADVISE_COMPACTED_2B		0x0001
+#define Z_EROFS_ADVISE_BIG_PCLUSTER_1		0x0002
 
 struct z_erofs_map_header {
 	__le32	h_reserved1;
@@ -260,6 +264,13 @@ enum {
 
 #define Z_EROFS_VLE_DI_CLUSTER_TYPE_BITS        2
 #define Z_EROFS_VLE_DI_CLUSTER_TYPE_BIT         0
+
+/*
+ * D0_CBLKCNT will be marked _only_ for the 1st non-head lcluster to
+ * store the compressed block count of a compressed extent (aka. block
+ * count of a pcluster).
+ */
+#define Z_EROFS_VLE_DI_D0_CBLKCNT		0x8000
 
 struct z_erofs_vle_decompressed_index {
 	__le16 di_advise;
