@@ -316,9 +316,8 @@ static erofs_blk_t __erofs_mapbh(struct erofs_buffer_block *bb)
 	return blkaddr;
 }
 
-erofs_blk_t erofs_mapbh(struct erofs_buffer_block *bb, bool end)
+erofs_blk_t erofs_mapbh(struct erofs_buffer_block *bb)
 {
-	DBG_BUGON(!end);
 	struct erofs_buffer_block *t = last_mapped_block;
 	while (1) {
 		t = list_next_entry(t, list);
