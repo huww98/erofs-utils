@@ -467,6 +467,10 @@ int main(int argc, char **argv)
 		sbi.build_time_nsec = t.tv_usec;
 	}
 
+	err = erofs_io_init();
+	if (err)
+		return 1;
+
 	err = dev_open(cfg.c_img_path);
 	if (err) {
 		usage();
@@ -533,16 +537,29 @@ int main(int argc, char **argv)
 		goto exit;
 
 	/* flush all remaining buffers */
-	if (!erofs_bflush(NULL))
+	err = !erofs_bflush(NULL);
+	if (err) {
 		err = -EIO;
-	else
-		err = dev_resize(nblocks);
+		goto exit;
+	}
 
-	if (!err && erofs_sb_has_sb_chksum())
+	if (erofs_sb_has_sb_chksum()) {
 		err = erofs_mkfs_superblock_csum_set();
+		if (err)
+			goto exit;
+	}
+
+	err = erofs_io_drain();
+	if (err) {
+		erofs_err("Failed to drain IO");
+		goto exit;
+	}
+
+	err = dev_resize(nblocks);
 exit:
 	z_erofs_compress_exit();
 	dev_close();
+	erofs_io_exit();
 	erofs_cleanup_exclude_rules();
 	erofs_exit_configure();
 

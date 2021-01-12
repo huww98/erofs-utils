@@ -318,10 +318,10 @@ static bool erofs_file_is_compressible(struct erofs_inode *inode)
 	return true;
 }
 
-static int write_uncompressed_file_from_fd(struct erofs_inode *inode, int fd)
+static int write_uncompressed_file_from_fd(struct erofs_inode *inode, struct erofs_fd *fd)
 {
 	int ret;
-	unsigned int nblocks, i;
+	unsigned int nblocks;
 
 	inode->datalayout = EROFS_INODE_FLAT_INLINE;
 	nblocks = inode->i_size / EROFS_BLKSIZ;
@@ -330,20 +330,9 @@ static int write_uncompressed_file_from_fd(struct erofs_inode *inode, int fd)
 	if (ret)
 		return ret;
 
-	for (i = 0; i < nblocks; ++i) {
-		char buf[EROFS_BLKSIZ];
-
-		ret = read(fd, buf, EROFS_BLKSIZ);
-		if (ret != EROFS_BLKSIZ) {
-			if (ret < 0)
-				return -errno;
-			return -EAGAIN;
-		}
-
-		ret = blk_write(buf, inode->u.i_blkaddr + i, 1);
-		if (ret)
-			return ret;
-	}
+	ret = blk_copy_from_fd(fd, inode->u.i_blkaddr, nblocks);
+	if (ret)
+		return ret;
 
 	/* read the tail-end data */
 	inode->idata_size = inode->i_size % EROFS_BLKSIZ;
@@ -352,12 +341,10 @@ static int write_uncompressed_file_from_fd(struct erofs_inode *inode, int fd)
 		if (!inode->idata)
 			return -ENOMEM;
 
-		ret = read(fd, inode->idata, inode->idata_size);
-		if (ret < inode->idata_size) {
-			free(inode->idata);
-			inode->idata = NULL;
-			return -EIO;
-		}
+		ret = buffer_copy_from_fd(fd, inode->idata,
+				blknr_to_addr(nblocks), inode->idata_size);
+		if (ret)
+			return ret;
 	}
 	return 0;
 }
@@ -382,9 +369,9 @@ int erofs_write_file(struct erofs_inode *inode)
 	fd = open(inode->i_srcpath, O_RDONLY | O_BINARY);
 	if (fd < 0)
 		return -errno;
-
-	ret = write_uncompressed_file_from_fd(inode, fd);
-	close(fd);
+	struct erofs_fd *erofs_fd = erofs_new_fd(fd);
+	ret = write_uncompressed_file_from_fd(inode, erofs_fd);
+	erofs_close_fd(erofs_fd);
 	return ret;
 }
 
