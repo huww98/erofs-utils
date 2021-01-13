@@ -134,21 +134,26 @@ static void queue_prepped(struct io_uring_sqe *sqe, struct erofs_io_data *data) 
 	DBG_BUGON(!sqe);
 	off_t continue_offset = data->offset - data->first_offset;
 	erofs_dbg("prepare sqe data %p op %d offset %#lx(+%#lx) len %#x, inflight %d", data, data->opcode, data->offset, continue_offset, data->len, inflight_io);
+	if ((data->opcode & EROFS_IO_TARGET_MASK) == EROFS_IO_TO_BUFFER) {
+		data->iovec.iov_base = data->target.buffer + continue_offset;
+		data->iovec.iov_len = data->len;
+	}
 	if ((data->opcode & EROFS_IO_RW_MASK) == EROFS_IO_READ) {
 		if ((data->opcode & EROFS_IO_TARGET_MASK) == EROFS_IO_TO_DEV) {
 			erofs_dbg("prepare sqe read from fd %d", data->source_fd->fd);
 			io_uring_prep_read_fixed(sqe, data->source_fd->fd,
 					erofs_io_buffer[data->buffer_index] + continue_offset,
 					data->len, data->offset, 0);
-		} else {
-			data->iovec.iov_base = data->target.buffer + continue_offset;
-			data->iovec.iov_len = data->len;
+		} else
 			io_uring_prep_readv(sqe, data->source_fd->fd, &data->iovec, 1, data->offset);
-		}
 	} else {
-		io_uring_prep_write_fixed(sqe, 0,
-				erofs_io_buffer[data->buffer_index] + continue_offset,
-				data->len, data->offset, 0);
+		if ((data->opcode & EROFS_IO_TARGET_MASK) == EROFS_IO_TO_DEV)
+			io_uring_prep_write_fixed(sqe, 0,
+					erofs_io_buffer[data->buffer_index] + continue_offset,
+					data->len, data->offset, 0);
+		else
+			io_uring_prep_writev(sqe, 0, &data->iovec, 1, data->offset);
+
 		sqe->flags |= IOSQE_FIXED_FILE;
 	}
 
@@ -460,17 +465,34 @@ int dev_write(const void *buf, u64 offset, size_t len)
 		return -EINVAL;
 	}
 
-	ret = pwrite64(erofs_devfd, buf, len, (off64_t)offset);
-	if (ret != (int)len) {
+	while (len) {
+		if (list_empty(&erofs_io_buffer_free_list))
+			goto handle_comp;
+		struct erofs_io_data *data =
+				list_first_entry(&erofs_io_buffer_free_list, struct erofs_io_data, free_list);
+
+		struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
+		if (!sqe)
+			goto handle_comp;
+
+		list_del(&data->free_list);
+		data->opcode = EROFS_IO_WRITE | EROFS_IO_TO_BUFFER;
+		data->offset = data->first_offset = offset;
+		data->len = data->first_len = len;
+		data->target.buffer = (void*)buf;
+		queue_prepped(sqe, data);
+		len = 0;
+		inflight_io++;
+		ret = erofs_uring_submit();
 		if (ret < 0) {
-			erofs_err("Failed to write data into device - %s:[%" PRIu64 ", %zd].",
-				  erofs_devname, offset, len);
-			return -errno;
+			erofs_err("failed io_uring_submit: %s", erofs_strerror(ret));
+			return ret;
 		}
 
-		erofs_err("Writing data into device - %s:[%" PRIu64 ", %zd] - was truncated.",
-			  erofs_devname, offset, len);
-		return -ERANGE;
+handle_comp:
+		ret = handle_comp(len);
+		if (ret < 0)
+			return ret;
 	}
 	return 0;
 }
