@@ -544,6 +544,12 @@ int main(int argc, char **argv)
 	}
 
 	if (erofs_sb_has_sb_chksum()) {
+		/* Ensure updated superblock is read */
+		err = erofs_io_drain();
+		if (err) {
+			erofs_err("Failed to drain IO");
+			goto exit;
+		}
 		err = erofs_mkfs_superblock_csum_set();
 		if (err)
 			goto exit;
