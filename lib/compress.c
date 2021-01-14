@@ -138,7 +138,7 @@ static int write_uncompressed_block(struct z_erofs_vle_compress_ctx *ctx,
 
 	erofs_dbg("Writing %u uncompressed data to block %u",
 		  count, ctx->blkaddr);
-	ret = blk_write(dst, ctx->blkaddr, 1);
+	ret = blk_write_from_fixed_buffer(dst, ctx->blkaddr, 1);
 	if (ret)
 		return ret;
 	return count;
@@ -152,7 +152,8 @@ static int vle_compress_one(struct erofs_inode *inode,
 	unsigned int len = ctx->tail - ctx->head;
 	unsigned int count;
 	int ret;
-	static char dstbuf[EROFS_BLKSIZ * 2];
+	char *dstbuf = erofs_io_get_fixed_buffer();
+	DBG_BUGON(IO_BLOCK_SIZE < 2*EROFS_BLKSIZ);
 	char *const dst = dstbuf + EROFS_BLKSIZ;
 
 	while (len) {
@@ -186,10 +187,10 @@ nocompression:
 				  count, ctx->blkaddr);
 
 			if (erofs_sb_has_lz4_0padding())
-				ret = blk_write(dst - (EROFS_BLKSIZ - ret),
+				ret = blk_write_from_fixed_buffer(dst - (EROFS_BLKSIZ - ret),
 						ctx->blkaddr, 1);
 			else
-				ret = blk_write(dst, ctx->blkaddr, 1);
+				ret = blk_write_from_fixed_buffer(dst, ctx->blkaddr, 1);
 
 			if (ret)
 				return ret;
