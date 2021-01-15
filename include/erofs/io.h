@@ -16,6 +16,8 @@
 #define O_BINARY	0
 #endif
 
+int erofs_io_init(void);
+void erofs_io_exit(void);
 int erofs_io_drain(void);
 int dev_open(const char *devname);
 int dev_open_ro(const char *dev);

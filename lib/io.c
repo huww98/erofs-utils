@@ -30,6 +30,16 @@ const char *erofs_devname;
 int erofs_devfd = -1;
 static u64 erofs_devsz;
 
+int erofs_io_init(void)
+{
+	int ret = 0;
+	return ret;
+}
+
+void erofs_io_exit(void)
+{
+}
+
 int dev_get_blkdev_size(int fd, u64 *bytes)
 {
 	errno = ENOTSUP;

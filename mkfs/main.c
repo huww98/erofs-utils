@@ -467,6 +467,10 @@ int main(int argc, char **argv)
 		sbi.build_time_nsec = t.tv_usec;
 	}
 
+	err = erofs_io_init();
+	if (err)
+		return 1;
+
 	err = dev_open(cfg.c_img_path);
 	if (err) {
 		usage();
@@ -568,6 +572,7 @@ int main(int argc, char **argv)
 exit:
 	z_erofs_compress_exit();
 	dev_close();
+	erofs_io_exit();
 	erofs_cleanup_exclude_rules();
 	erofs_exit_configure();
 
