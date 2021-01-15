@@ -252,61 +252,26 @@ static bool erofs_file_is_compressible(struct erofs_inode *inode)
 	return true;
 }
 
-static int write_uncompressed_file_from_fd(struct erofs_inode *inode, int fd)
+static int write_uncompressed_file_from_fd(struct erofs_inode *inode, struct erofs_fd *fd)
 {
+	const unsigned int nblocks = erofs_blknr(inode->i_size);
 	int ret;
-	unsigned int nblocks, i;
 
-	nblocks = inode->i_size / EROFS_BLKSIZ;
-
-	for (i = 0; i < nblocks; ++i) {
-		void *buf = erofs_io_get_fixed_buffer();
-		if (IS_ERR(buf))
-			return PTR_ERR(buf);
-
-		ret = read(fd, buf, EROFS_BLKSIZ);
-		if (ret != EROFS_BLKSIZ) {
-			if (ret < 0)
-				return -errno;
-			return -EAGAIN;
-		}
-
-		ret = blk_write_from_fixed_buffer(buf, inode->u.i_blkaddr + i, 1);
-		if (ret)
-			return ret;
-	}
-
-	/* read the tail-end data */
 	if (inode->datalayout == EROFS_INODE_FLAT_INLINE) {
 		DBG_BUGON(!inode->bh_inline);
+		ret = blk_copy_from_fd(fd, inode->u.i_blkaddr, nblocks);
+		if (ret)
+			return ret;
 
-		ret = read(fd, inode->idata, inode->idata_size);
-		if (ret < inode->idata_size) {
-			free(inode->idata);
-			inode->idata = NULL;
-			return -EIO;
-		}
+		ret = buffer_copy_from_fd(fd, inode->idata,
+				blknr_to_addr(nblocks), inode->idata_size);
 	} else {
 		DBG_BUGON(inode->datalayout != EROFS_INODE_FLAT_PLAIN);
 		DBG_BUGON(inode->bh_inline);
-		unsigned int tail_size = inode->i_size % EROFS_BLKSIZ;
-		void *buf = erofs_io_get_fixed_buffer();
-		if (IS_ERR(buf))
-			return PTR_ERR(buf);
-
-		ret = read(fd, buf, tail_size);
-		if (ret != tail_size) {
-			if (ret < 0)
-				return -errno;
-			return -EAGAIN;
-		}
-
-		ret = dev_write_from_fixed_buffer(buf, blknr_to_addr(inode->u.i_blkaddr + i),
-				tail_size);
-		if (ret)
-			return ret;
+		ret = dev_copy_from_fd(fd, blknr_to_addr(inode->u.i_blkaddr),
+				inode->i_size);
 	}
-	return 0;
+	return ret;
 }
 
 static bool erofs_bh_flush_write_inode(struct erofs_buffer_head *bh)
@@ -591,9 +556,11 @@ int erofs_write_file(struct erofs_inode *inode)
 	fd = open(inode->i_srcpath, O_RDONLY | O_BINARY);
 	if (fd < 0)
 		return -errno;
-
-	ret = write_uncompressed_file_from_fd(inode, fd);
-	close(fd);
+	struct erofs_fd *erofs_fd = erofs_new_fd(fd);
+	if (IS_ERR(erofs_fd))
+		return PTR_ERR(erofs_fd);
+	ret = write_uncompressed_file_from_fd(inode, erofs_fd);
+	erofs_close_fd(erofs_fd);
 	return ret;
 }
 

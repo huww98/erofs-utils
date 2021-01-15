@@ -12,6 +12,12 @@
 static struct io_uring ring;
 static int num_pending_sqe;
 
+struct erofs_fd {
+	int fd;
+	int inflight_io;
+	int io_finished;
+};
+
 struct erofs_io_data {
 	struct list_head free_list;
 	int opcode;
@@ -28,10 +34,12 @@ struct erofs_io_data {
 } erofs_io_buffer_heads[IO_QUEUE_DEPTH];
 
 #define EROFS_IO_RW_MASK 1
+#define EROFS_IO_READ 0
 #define EROFS_IO_WRITE 1
 
 #define EROFS_IO_TARGET_MASK (3 << 1)
 #define EROFS_IO_BUFFER (0 << 1)
+#define EROFS_IO_READ_TO_DEV (1 << 1)
 #define EROFS_IO_WRITE_FIXED_BUFFER (1 << 1)
 
 #define EROFS_IO_FREE_BUFFER (1 << 3)
@@ -74,6 +82,29 @@ void erofs_io_uring_exit(void)
 	io_uring_queue_exit(&ring);
 }
 
+struct erofs_fd *erofs_new_fd(int fd)
+{
+	struct erofs_fd *erofs_fd;
+
+	erofs_fd = malloc(sizeof(struct erofs_fd));
+	if (!erofs_fd)
+		return ERR_PTR(-ENOMEM);
+	erofs_fd->fd = fd;
+	erofs_fd->inflight_io = 0;
+	erofs_fd->io_finished = 0;
+	return erofs_fd;
+}
+
+void erofs_close_fd(struct erofs_fd *fd)
+{
+	if (!fd->inflight_io) {
+		close(fd->fd);
+		free(fd);
+		return;
+	}
+	fd->io_finished = 1;
+}
+
 static void queue_prepped(struct io_uring_sqe *sqe, struct erofs_io_data *data)
 {
 	DBG_BUGON(!sqe);
@@ -83,14 +114,27 @@ static void queue_prepped(struct io_uring_sqe *sqe, struct erofs_io_data *data)
 		data->iovec.iov_base = data->target.buffer + continue_offset;
 		data->iovec.iov_len = data->len;
 	}
-	if ((data->opcode & EROFS_IO_TARGET_MASK) == EROFS_IO_WRITE_FIXED_BUFFER)
-		io_uring_prep_write_fixed(sqe, 0,
-				data->target.buffer + continue_offset,
-				data->len, data->offset, 0);
-	else
-		io_uring_prep_writev(sqe, 0, &data->iovec, 1, data->offset);
+	if ((data->opcode & EROFS_IO_RW_MASK) == EROFS_IO_READ) {
+		erofs_dbg("prepare sqe read from fd %d", data->source_fd->fd);
+		if ((data->opcode & EROFS_IO_TARGET_MASK) == EROFS_IO_READ_TO_DEV) {
+			io_uring_prep_read_fixed(sqe, data->source_fd->fd,
+					erofs_io_buffer[data->buffer_index] + continue_offset,
+					data->len, data->offset, 0);
+		} else {
+			erofs_dbg("prepare sqe read to buffer %p", data->target.buffer);
+			io_uring_prep_readv(sqe, data->source_fd->fd,
+					&data->iovec, 1, data->offset);
+		}
+	} else {
+		if ((data->opcode & EROFS_IO_TARGET_MASK) == EROFS_IO_WRITE_FIXED_BUFFER)
+			io_uring_prep_write_fixed(sqe, 0,
+					data->target.buffer + continue_offset,
+					data->len, data->offset, 0);
+		else
+			io_uring_prep_writev(sqe, 0, &data->iovec, 1, data->offset);
 
-	sqe->flags |= IOSQE_FIXED_FILE;
+		sqe->flags |= IOSQE_FIXED_FILE;
+	}
 
 	io_uring_sqe_set_data(sqe, data);
 	num_pending_sqe++;
@@ -156,11 +200,29 @@ static int handle_comp(int wait)
 			continue;
 		}
 
+		if ((data->opcode & EROFS_IO_RW_MASK) == EROFS_IO_READ) {
+			data->source_fd->inflight_io--;
+			if (!data->source_fd->inflight_io && data->source_fd->io_finished) {
+				erofs_dbg("close fd %d", data->source_fd->fd);
+				close(data->source_fd->fd);
+				free(data->source_fd);
+				data->source_fd = NULL;
+			}
+		}
 		if (data->opcode & EROFS_IO_FREE_BUFFER)
 			free(data->target.buffer);
-
-		list_add_tail(&data->free_list, &erofs_io_buffer_free_list);
-		inflight_io--;
+		if ((data->opcode & EROFS_IO_RW_MASK) == EROFS_IO_READ &&
+				(data->opcode & EROFS_IO_TARGET_MASK) == EROFS_IO_READ_TO_DEV) {
+			data->opcode = EROFS_IO_WRITE | EROFS_IO_WRITE_FIXED_BUFFER;
+			data->first_offset = data->offset = data->target.dev_offset;
+			data->len = data->first_len;
+			data->target.buffer = erofs_io_buffer[data->buffer_index];
+			sqe = io_uring_get_sqe(&ring);
+			queue_prepped(sqe, data);
+		} else {
+			list_add_tail(&data->free_list, &erofs_io_buffer_free_list);
+			inflight_io--;
+		}
 		io_uring_cqe_seen(&ring, cqe);
 	}
 	ret = erofs_uring_submit();
@@ -225,6 +287,93 @@ int dev_write_from_fixed_buffer(void *buf, u64 offset, size_t len)
 		}
 
 handle_comp:
+		ret = handle_comp(len);
+		if (ret < 0)
+			return ret;
+	}
+	return 0;
+}
+
+int buffer_copy_from_fd(struct erofs_fd *fd, void *buffer, u64 offset, unsigned int len)
+{
+	int ret;
+
+	while (len) {
+		if (list_empty(&erofs_io_buffer_free_list))
+			goto handle_comp;
+		struct erofs_io_data *data = list_first_entry(
+				&erofs_io_buffer_free_list, struct erofs_io_data, free_list);
+
+		struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
+		if (!sqe)
+			goto handle_comp;
+
+		list_del(&data->free_list);
+		data->opcode = EROFS_IO_READ | EROFS_IO_BUFFER;
+		data->offset = data->first_offset = offset;
+		data->len = data->first_len = len;
+		data->source_fd = fd;
+		data->source_fd->inflight_io++;
+		data->target.buffer = buffer;
+		queue_prepped(sqe, data);
+		len = 0;
+		inflight_io++;
+		ret = erofs_uring_submit();
+		if (ret < 0) {
+			erofs_err("failed io_uring_submit: %s", erofs_strerror(ret));
+			return ret;
+		}
+
+handle_comp:
+		ret = handle_comp(len);
+		if (ret < 0)
+			return ret;
+	}
+	return 0;
+}
+
+int dev_copy_from_fd(struct erofs_fd *fd, u64 dev_offset, unsigned int len)
+{
+	off_t offset = 0;
+	int ret;
+
+	while (len) {
+		/* Queue up as many reads as we can */
+		while (len) {
+			unsigned int this_size = len;
+
+			if (list_empty(&erofs_io_buffer_free_list))
+				break;
+			if (this_size > IO_BLOCK_SIZE)
+				this_size = IO_BLOCK_SIZE;
+			len -= this_size;
+
+			struct erofs_io_data *data = list_first_entry(
+					&erofs_io_buffer_free_list,
+					struct erofs_io_data, free_list);
+			struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
+			if (!sqe)
+				break;
+
+			list_del(&data->free_list);
+			data->opcode = EROFS_IO_READ | EROFS_IO_READ_TO_DEV;
+			data->offset = data->first_offset = offset;
+			data->len = data->first_len = this_size;
+			data->source_fd = fd;
+			data->source_fd->inflight_io++;
+			data->target.dev_offset = dev_offset + offset;
+
+			queue_prepped(sqe, data);
+			offset += this_size;
+			inflight_io++;
+		}
+
+		ret = erofs_uring_submit();
+		if (ret < 0) {
+			erofs_err("failed io_uring_submit: %s", erofs_strerror(ret));
+			return ret;
+		}
+
 		ret = handle_comp(len);
 		if (ret < 0)
 			return ret;

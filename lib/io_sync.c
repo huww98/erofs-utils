@@ -2,6 +2,7 @@
 #ifndef _LARGEFILE64_SOURCE
 #define _LARGEFILE64_SOURCE
 #endif
+#include <sys/types.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include "erofs/io.h"
@@ -11,6 +12,25 @@
 
 extern const char *erofs_devname;
 extern int erofs_devfd;
+
+struct erofs_fd {
+	int fd;
+};
+
+struct erofs_fd *erofs_new_fd(int fd)
+{
+	struct erofs_fd *erofs_fd = malloc(sizeof(struct erofs_fd));
+	if (!erofs_fd)
+		return ERR_PTR(-ENOMEM);
+	erofs_fd->fd = fd;
+	return erofs_fd;
+}
+
+void erofs_close_fd(struct erofs_fd *fd)
+{
+	close(fd->fd);
+	free(fd);
+}
 
 int erofs_io_drain(void)
 {
@@ -34,6 +54,48 @@ int dev_write_from_fixed_buffer(void *buf, u64 offset, size_t len)
 	DBG_BUGON(((char *)buf + len - fixed_buf) > IO_BLOCK_SIZE);
 	fixed_buf_in_use = false;
 	return dev_write(buf, offset, len, false);
+}
+
+int buffer_copy_from_fd(struct erofs_fd *fd, void *buffer, u64 offset, unsigned int len)
+{
+	ssize_t ret = pread64(fd->fd, buffer, len, offset);
+	if (ret != len) {
+		if (ret < 0)
+			return -errno;
+		return -EAGAIN;
+	}
+	return 0;
+}
+
+int dev_copy_from_fd(struct erofs_fd *fd, u64 dev_offset, unsigned int len)
+{
+	int ret;
+	char buf[IO_BLOCK_SIZE];
+
+	ret = lseek(fd->fd, 0, SEEK_SET);
+	if (ret < 0)
+		return -errno;
+	while (len) {
+		unsigned int this_size = len;
+
+		if (this_size > IO_BLOCK_SIZE)
+			this_size = IO_BLOCK_SIZE;
+		len -= this_size;
+
+		ret = read(fd->fd, buf, this_size);
+		if (ret != this_size) {
+			if (ret < 0)
+				return -errno;
+			return -EAGAIN;
+		}
+
+		ret = dev_write(buf, dev_offset, this_size, false);
+		if (ret)
+			return ret;
+
+		dev_offset += this_size;
+	}
+	return 0;
 }
 
 int __dev_write(void *buf, u64 offset, size_t len, bool free_buf)
