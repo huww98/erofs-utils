@@ -13,5 +13,10 @@ liberofs_la_SOURCES += compressor_lz4hc.c
 endif
 endif
 
+if ENABLE_LIBURING
+liberofs_la_SOURCES += io_uring.c
+liberofs_la_CFLAGS += ${liburing_CFLAGS}
+else
 liberofs_la_SOURCES += io_sync.c
+endif
 

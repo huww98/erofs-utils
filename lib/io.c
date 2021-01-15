@@ -26,6 +26,13 @@
 #define pr_fmt(fmt) "EROFS IO: " FUNC_LINE_FMT fmt "\n"
 #include "erofs/print.h"
 
+#ifdef HAVE_LIBURING
+int erofs_io_uring_init(void);
+void erofs_io_uring_exit(void);
+int erofs_io_uring_dev_open(int fd);
+void erofs_io_uring_dev_close(void);
+#endif
+
 const char *erofs_devname;
 int erofs_devfd = -1;
 static u64 erofs_devsz;
@@ -33,11 +40,19 @@ static u64 erofs_devsz;
 int erofs_io_init(void)
 {
 	int ret = 0;
+#ifdef HAVE_LIBURING
+	ret = erofs_io_uring_init();
+	if (ret)
+		return ret;
+#endif
 	return ret;
 }
 
 void erofs_io_exit(void)
 {
+#ifdef HAVE_LIBURING
+	erofs_io_uring_exit();
+#endif
 }
 
 int dev_get_blkdev_size(int fd, u64 *bytes)
@@ -62,6 +77,9 @@ int dev_get_blkdev_size(int fd, u64 *bytes)
 
 void dev_close(void)
 {
+#ifdef HAVE_LIBURING
+	erofs_io_uring_dev_close();
+#endif
 	close(erofs_devfd);
 	erofs_devname = NULL;
 	erofs_devfd   = -1;
@@ -111,6 +129,14 @@ int dev_open(const char *dev)
 		close(fd);
 		return -EINVAL;
 	}
+
+#ifdef HAVE_LIBURING
+	ret = erofs_io_uring_dev_open(fd);
+	if (ret < 0) {
+		close(fd);
+		return ret;
+	}
+#endif
 
 	erofs_devname = dev;
 	erofs_devfd = fd;

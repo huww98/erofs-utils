@@ -71,6 +71,15 @@ AC_ARG_WITH(uuid,
    [AS_HELP_STRING([--without-uuid],
       [Ignore presence of libuuid and disable uuid support @<:@default=enabled@:>@])])
 
+AC_ARG_WITH(uring,
+   [AS_HELP_STRING([--with-uring],
+      [enable and build with io_uring support @<:@default=no@:>@])],
+   [case "$with_uring" in
+      yes|no) ;;
+      *) AC_MSG_ERROR([invalid argument to --with-uring])
+      ;;
+    esac], [with_uring=no])
+
 AC_ARG_WITH(selinux,
    [AS_HELP_STRING([--with-selinux],
       [enable and build with selinux support @<:@default=no@:>@])],
@@ -174,6 +183,20 @@ return 0;
   LIBS="${saved_LIBS}"
   CPPFLAGS="${saved_CPPFLAGS}"], [have_uuid="no"])
 
+# Configure liburing
+AS_IF([test "x$with_uring" != "xno"], [
+  PKG_CHECK_MODULES([liburing], [liburing])
+  # Paranoia: don't trust the result reported by pkgconfig before trying out
+  saved_LIBS="$LIBS"
+  saved_CPPFLAGS=${CPPFLAGS}
+  CPPFLAGS="${liburing_CFLAGS} ${CPPFLAGS}"
+  LIBS="${liburing_LIBS} $LIBS"
+  AC_CHECK_LIB(uring, io_uring_queue_init, [
+    have_liburing="yes" ], [
+    AC_MSG_ERROR([liburing doesn't work properly])])
+  LIBS="${saved_LIBS}"
+  CPPFLAGS="${saved_CPPFLAGS}"], [have_liburing="no"])
+
 # Configure selinux
 AS_IF([test "x$with_selinux" != "xno"], [
   PKG_CHECK_MODULES([libselinux], [libselinux])
@@ -238,9 +261,14 @@ fi
 AM_CONDITIONAL([ENABLE_LZ4], [test "x${have_lz4}" = "xyes"])
 AM_CONDITIONAL([ENABLE_LZ4HC], [test "x${have_lz4hc}" = "xyes"])
 AM_CONDITIONAL([ENABLE_FUSE], [test "x${have_fuse}" = "xyes"])
+AM_CONDITIONAL([ENABLE_LIBURING], [test "x${have_liburing}" = "xyes"])
 
 if test "x$have_uuid" = "xyes"; then
   AC_DEFINE([HAVE_LIBUUID], 1, [Define to 1 if libuuid is found])
+fi
+
+if test "x$have_liburing" = "xyes"; then
+  AC_DEFINE([HAVE_LIBURING], 1, [Define to 1 if liburing is found])
 fi
 
 if test "x$have_selinux" = "xyes"; then
