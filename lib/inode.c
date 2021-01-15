@@ -167,83 +167,110 @@ int erofs_prepare_dir_file(struct erofs_inode *dir)
 	return 0;
 }
 
-static void fill_dirblock(char *buf, unsigned int size, unsigned int q,
-			  struct erofs_dentry *head, struct erofs_dentry *end)
+struct erofs_write_dir_context {
+	struct erofs_dentry *head, *tail;
+	void *write_buffer;
+	unsigned int q, buffer_blkaddr, blk_in_buffer;
+};
+
+static void fill_dirblock(struct erofs_write_dir_context *ctx,
+		void *buf, unsigned int size)
 {
-	unsigned int p = 0;
+	unsigned int p = 0, q = ctx->q;
 
 	/* write out all erofs_dirents + filenames */
-	while (head != end) {
-		const unsigned int namelen = strlen(head->name);
+	while (ctx->head != ctx->tail) {
+		const unsigned int namelen = strlen(ctx->head->name);
 		struct erofs_dirent d = {
-			.nid = cpu_to_le64(head->nid),
+			.nid = cpu_to_le64(ctx->head->nid),
 			.nameoff = cpu_to_le16(q),
-			.file_type = head->type,
+			.file_type = ctx->head->type,
 		};
 
 		memcpy(buf + p, &d, sizeof(d));
-		memcpy(buf + q, head->name, namelen);
+		memcpy(buf + q, ctx->head->name, namelen);
 		p += sizeof(d);
 		q += namelen;
 
-		head = list_next_entry(head, d_child);
+		ctx->head = list_next_entry(ctx->head, d_child);
 	}
 	memset(buf + q, 0, size - q);
+	ctx->q = 0;
 }
 
-static int write_dirblock(unsigned int q, struct erofs_dentry *head,
-			  struct erofs_dentry *end, erofs_blk_t blkaddr)
+static int write_dirblock_commit_io(struct erofs_write_dir_context *ctx)
 {
-	void *buf = erofs_io_get_fixed_buffer();
-	if (IS_ERR(buf))
-		return PTR_ERR(buf);
-	DBG_BUGON(IO_BLOCK_SIZE < EROFS_BLKSIZ);
+	int ret;
 
-	fill_dirblock(buf, EROFS_BLKSIZ, q, head, end);
-	return blk_write_from_fixed_buffer(buf, blkaddr, 1);
+	if (!ctx->blk_in_buffer)
+		return 0;
+	ret = blk_write_from_fixed_buffer(ctx->write_buffer,
+				ctx->buffer_blkaddr, ctx->blk_in_buffer);
+	if (ret)
+		return ret;
+	ctx->write_buffer = NULL;
+	ctx->buffer_blkaddr += ctx->blk_in_buffer;
+	ctx->blk_in_buffer = 0;
+	return 0;
+}
+
+static int write_dirblock(struct erofs_write_dir_context *ctx)
+{
+	int ret = 0;
+
+	if (ctx->write_buffer == NULL) {
+		ctx->write_buffer = erofs_io_get_fixed_buffer();
+		if (IS_ERR(ctx->write_buffer))
+			return PTR_ERR(ctx->write_buffer);
+	}
+	fill_dirblock(ctx, ctx->write_buffer + blknr_to_addr(ctx->blk_in_buffer), EROFS_BLKSIZ);
+	ctx->blk_in_buffer++;
+	if (ctx->blk_in_buffer == erofs_blknr(IO_BLOCK_SIZE))
+		ret = write_dirblock_commit_io(ctx);
+	return ret;
 }
 
 int erofs_write_dir_file(struct erofs_inode *dir)
 {
-	struct erofs_dentry *head = list_first_entry(&dir->i_subdirs,
-						     struct erofs_dentry,
-						     d_child);
-	struct erofs_dentry *d;
+	struct erofs_write_dir_context ctx = {
+		.head = list_first_entry(&dir->i_subdirs, struct erofs_dentry, d_child),
+		.write_buffer = NULL,
+		.buffer_blkaddr = dir->u.i_blkaddr,
+		.q = 0,
+		.blk_in_buffer = 0,
+	};
 	int ret;
-	unsigned int q, used, blkno;
+	unsigned int used = 0;
 
-	q = used = blkno = 0;
-
-	list_for_each_entry(d, &dir->i_subdirs, d_child) {
-		const unsigned int len = strlen(d->name) +
+	list_for_each_entry(ctx.tail, &dir->i_subdirs, d_child) {
+		const unsigned int len = strlen(ctx.tail->name) +
 			sizeof(struct erofs_dirent);
 
 		if (used + len > EROFS_BLKSIZ) {
-			ret = write_dirblock(q, head, d,
-					     dir->u.i_blkaddr + blkno);
+			ret = write_dirblock(&ctx);
 			if (ret)
 				return ret;
-
-			head = d;
-			q = used = 0;
-			++blkno;
+			used = 0;
 		}
 		used += len;
-		q += sizeof(struct erofs_dirent);
+		ctx.q += sizeof(struct erofs_dirent);
 	}
 
 	DBG_BUGON(used > EROFS_BLKSIZ);
 	if (dir->datalayout == EROFS_INODE_FLAT_PLAIN) {
 		DBG_BUGON(dir->idata_size);
-		return write_dirblock(q, head, d, dir->u.i_blkaddr + blkno);
+		ret = write_dirblock(&ctx);
+		if (ret)
+			return ret;
+	} else {
+		DBG_BUGON(dir->datalayout != EROFS_INODE_FLAT_INLINE);
+		DBG_BUGON(used != dir->i_size % EROFS_BLKSIZ);
+		DBG_BUGON(used != dir->idata_size);
+		DBG_BUGON(!used);
+		/* fill tail-end dir block */
+		fill_dirblock(&ctx, dir->idata, dir->idata_size);
 	}
-	DBG_BUGON(dir->datalayout != EROFS_INODE_FLAT_INLINE);
-	DBG_BUGON(used != dir->i_size % EROFS_BLKSIZ);
-	DBG_BUGON(used != dir->idata_size);
-	DBG_BUGON(!used);
-	/* fill tail-end dir block */
-	fill_dirblock(dir->idata, dir->idata_size, q, head, d);
-	return 0;
+	return write_dirblock_commit_io(&ctx);
 }
 
 /* rules to decide whether a file could be compressed or not */
