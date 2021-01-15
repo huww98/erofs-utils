@@ -195,7 +195,7 @@ int dev_write(void *buf, u64 offset, size_t len, bool free_buf)
 
 int dev_fillzero(u64 offset, size_t len, bool padding)
 {
-	static const char zero[EROFS_BLKSIZ] = {0};
+	static const char zero[IO_BLOCK_SIZE] = {0};
 	int ret;
 
 	if (cfg.c_dry_run)
@@ -206,12 +206,12 @@ int dev_fillzero(u64 offset, size_t len, bool padding)
 				  FALLOC_FL_KEEP_SIZE, offset, len) >= 0)
 		return 0;
 #endif
-	while (len > EROFS_BLKSIZ) {
-		ret = dev_write((void *)zero, offset, EROFS_BLKSIZ, false);
+	while (len > IO_BLOCK_SIZE) {
+		ret = dev_write((void *)zero, offset, IO_BLOCK_SIZE, false);
 		if (ret)
 			return ret;
-		len -= EROFS_BLKSIZ;
-		offset += EROFS_BLKSIZ;
+		len -= IO_BLOCK_SIZE;
+		offset += IO_BLOCK_SIZE;
 	}
 	return dev_write((void *)zero, offset, len, false);
 }
