@@ -12,6 +12,11 @@
 extern const char *erofs_devname;
 extern int erofs_devfd;
 
+int erofs_io_drain(void)
+{
+	return 0;
+}
+
 int __dev_write(void *buf, u64 offset, size_t len, bool free_buf)
 {
 	int ret;

@@ -532,14 +532,39 @@ int main(int argc, char **argv)
 	if (err)
 		goto exit;
 
-	/* flush all remaining buffers */
-	if (!erofs_bflush(NULL))
-		err = -EIO;
-	else
-		err = dev_resize(nblocks);
+	/* ensure all buffer has been read */
+	err = erofs_io_drain();
+	if (err) {
+		erofs_err("Failed to drain IO");
+		goto exit;
+	}
 
-	if (!err && erofs_sb_has_sb_chksum())
+	/* flush all remaining buffers */
+	err = !erofs_bflush(NULL);
+	if (err) {
+		err = -EIO;
+		goto exit;
+	}
+
+	if (erofs_sb_has_sb_chksum()) {
+		/* ensure updated superblock is read */
+		err = erofs_io_drain();
+		if (err) {
+			erofs_err("Failed to drain IO");
+			goto exit;
+		}
 		err = erofs_mkfs_superblock_csum_set();
+		if (err)
+			goto exit;
+	}
+
+	err = erofs_io_drain();
+	if (err) {
+		erofs_err("Failed to drain IO");
+		goto exit;
+	}
+
+	err = dev_resize(nblocks);
 exit:
 	z_erofs_compress_exit();
 	dev_close();
