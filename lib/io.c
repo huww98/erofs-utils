@@ -25,8 +25,8 @@
 #define pr_fmt(fmt) "EROFS IO: " FUNC_LINE_FMT fmt "\n"
 #include "erofs/print.h"
 
-static const char *erofs_devname;
-static int erofs_devfd = -1;
+const char *erofs_devname;
+int erofs_devfd = -1;
 static u64 erofs_devsz;
 
 int dev_get_blkdev_size(int fd, u64 *bytes)
@@ -129,10 +129,9 @@ u64 dev_length(void)
 	return erofs_devsz;
 }
 
+int __dev_write(const void *buf, u64 offset, size_t len);
 int dev_write(const void *buf, u64 offset, size_t len)
 {
-	int ret;
-
 	if (cfg.c_dry_run)
 		return 0;
 
@@ -148,19 +147,7 @@ int dev_write(const void *buf, u64 offset, size_t len)
 		return -EINVAL;
 	}
 
-	ret = pwrite64(erofs_devfd, buf, len, (off64_t)offset);
-	if (ret != (int)len) {
-		if (ret < 0) {
-			erofs_err("Failed to write data into device - %s:[%" PRIu64 ", %zd].",
-				  erofs_devname, offset, len);
-			return -errno;
-		}
-
-		erofs_err("Writing data into device - %s:[%" PRIu64 ", %zd] - was truncated.",
-			  erofs_devname, offset, len);
-		return -ERANGE;
-	}
-	return 0;
+	return __dev_write(buf, offset, len);
 }
 
 int dev_fillzero(u64 offset, size_t len, bool padding)
