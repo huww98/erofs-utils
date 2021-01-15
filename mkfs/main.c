@@ -368,7 +368,7 @@ static int erofs_mkfs_superblock_csum_set(void)
 	/* set up checksum field to erofs_super_block */
 	sb->checksum = cpu_to_le32(crc);
 
-	ret = blk_write(buf, 0, 1);
+	ret = blk_write(buf, 0, 1, false);
 	if (ret) {
 		erofs_err("failed to write checksummed superblock: %s",
 			  erofs_strerror(ret));

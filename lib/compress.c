@@ -138,7 +138,7 @@ static int write_uncompressed_block(struct z_erofs_vle_compress_ctx *ctx,
 
 	erofs_dbg("Writing %u uncompressed data to block %u",
 		  count, ctx->blkaddr);
-	ret = blk_write(dst, ctx->blkaddr, 1);
+	ret = blk_write(dst, ctx->blkaddr, 1, false);
 	if (ret)
 		return ret;
 	return count;
@@ -187,9 +187,9 @@ nocompression:
 
 			if (erofs_sb_has_lz4_0padding())
 				ret = blk_write(dst - (EROFS_BLKSIZ - ret),
-						ctx->blkaddr, 1);
+						ctx->blkaddr, 1, false);
 			else
-				ret = blk_write(dst, ctx->blkaddr, 1);
+				ret = blk_write(dst, ctx->blkaddr, 1, false);
 
 			if (ret)
 				return ret;

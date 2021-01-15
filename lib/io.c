@@ -14,6 +14,7 @@
 #endif
 #include <sys/stat.h>
 #include <sys/ioctl.h>
+#include <stdlib.h>
 #include "erofs/io.h"
 #ifdef HAVE_LINUX_FS_H
 #include <linux/fs.h>
@@ -129,9 +130,15 @@ u64 dev_length(void)
 	return erofs_devsz;
 }
 
-int __dev_write(const void *buf, u64 offset, size_t len);
-int dev_write(const void *buf, u64 offset, size_t len)
+int __dev_write(void *buf, u64 offset, size_t len, bool free_buf);
+int dev_write(void *buf, u64 offset, size_t len, bool free_buf)
 {
+	if (!len) {
+		if (free_buf)
+			free(buf);
+		return 0;
+	}
+
 	if (cfg.c_dry_run)
 		return 0;
 
@@ -147,7 +154,7 @@ int dev_write(const void *buf, u64 offset, size_t len)
 		return -EINVAL;
 	}
 
-	return __dev_write(buf, offset, len);
+	return __dev_write(buf, offset, len, free_buf);
 }
 
 int dev_fillzero(u64 offset, size_t len, bool padding)
@@ -164,13 +171,13 @@ int dev_fillzero(u64 offset, size_t len, bool padding)
 		return 0;
 #endif
 	while (len > EROFS_BLKSIZ) {
-		ret = dev_write(zero, offset, EROFS_BLKSIZ);
+		ret = dev_write((void *)zero, offset, EROFS_BLKSIZ, false);
 		if (ret)
 			return ret;
 		len -= EROFS_BLKSIZ;
 		offset += EROFS_BLKSIZ;
 	}
-	return dev_write(zero, offset, len);
+	return dev_write((void *)zero, offset, len, false);
 }
 
 int dev_fsync(void)

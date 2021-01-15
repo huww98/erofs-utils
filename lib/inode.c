@@ -238,7 +238,7 @@ static int write_dirblock(unsigned int q, struct erofs_dentry *head,
 	char buf[EROFS_BLKSIZ];
 
 	fill_dirblock(buf, EROFS_BLKSIZ, q, head, end);
-	return blk_write(buf, blkaddr, 1);
+	return blk_write(buf, blkaddr, 1, false);
 }
 
 int erofs_write_dir_file(struct erofs_inode *dir)
@@ -288,6 +288,7 @@ int erofs_write_dir_file(struct erofs_inode *dir)
 	return 0;
 }
 
+/* will free buf */
 int erofs_write_file_from_buffer(struct erofs_inode *inode, char *buf)
 {
 	const unsigned int nblocks = erofs_blknr(inode->i_size);
@@ -299,8 +300,6 @@ int erofs_write_file_from_buffer(struct erofs_inode *inode, char *buf)
 	if (ret)
 		return ret;
 
-	if (nblocks)
-		blk_write(buf, inode->u.i_blkaddr, nblocks);
 	inode->idata_size = inode->i_size % EROFS_BLKSIZ;
 	if (inode->idata_size) {
 		inode->idata = malloc(inode->idata_size);
@@ -309,6 +308,10 @@ int erofs_write_file_from_buffer(struct erofs_inode *inode, char *buf)
 		memcpy(inode->idata, buf + blknr_to_addr(nblocks),
 		       inode->idata_size);
 	}
+	if (nblocks)
+		blk_write(buf, inode->u.i_blkaddr, nblocks, true);
+	else
+		free(buf);
 	return 0;
 }
 
@@ -340,7 +343,7 @@ static int write_uncompressed_file_from_fd(struct erofs_inode *inode, int fd)
 			return -EAGAIN;
 		}
 
-		ret = blk_write(buf, inode->u.i_blkaddr + i, 1);
+		ret = blk_write(buf, inode->u.i_blkaddr + i, 1, false);
 		if (ret)
 			return ret;
 	}
@@ -469,7 +472,7 @@ static bool erofs_bh_flush_write_inode(struct erofs_buffer_head *bh)
 		BUG_ON(1);
 	}
 
-	ret = dev_write(&u, off, inode->inode_isize);
+	ret = dev_write(&u, off, inode->inode_isize, false);
 	if (ret)
 		return false;
 	off += inode->inode_isize;
@@ -480,8 +483,7 @@ static bool erofs_bh_flush_write_inode(struct erofs_buffer_head *bh)
 		if (IS_ERR(xattrs))
 			return false;
 
-		ret = dev_write(xattrs, off, inode->xattr_isize);
-		free(xattrs);
+		ret = dev_write(xattrs, off, inode->xattr_isize, true);
 		if (ret)
 			return false;
 
@@ -491,10 +493,9 @@ static bool erofs_bh_flush_write_inode(struct erofs_buffer_head *bh)
 	if (inode->extent_isize) {
 		/* write compression metadata */
 		off = Z_EROFS_VLE_EXTENT_ALIGN(off);
-		ret = dev_write(inode->compressmeta, off, inode->extent_isize);
+		ret = dev_write(inode->compressmeta, off, inode->extent_isize, true);
 		if (ret)
 			return false;
-		free(inode->compressmeta);
 	}
 
 	inode->bh = NULL;
@@ -597,12 +598,11 @@ static bool erofs_bh_flush_write_inline(struct erofs_buffer_head *bh)
 	const erofs_off_t off = erofs_btell(bh, false);
 	int ret;
 
-	ret = dev_write(inode->idata, off, inode->idata_size);
+	ret = dev_write(inode->idata, off, inode->idata_size, true);
 	if (ret)
 		return false;
 
 	inode->idata_size = 0;
-	free(inode->idata);
 	inode->idata = NULL;
 
 	erofs_iput(inode);
@@ -634,7 +634,7 @@ int erofs_write_tail_end(struct erofs_inode *inode)
 
 		erofs_mapbh(bh->block);
 		pos = erofs_btell(bh, true) - EROFS_BLKSIZ;
-		ret = dev_write(inode->idata, pos, inode->idata_size);
+		ret = dev_write(inode->idata, pos, inode->idata_size, true);
 		if (ret)
 			return ret;
 		if (inode->idata_size < EROFS_BLKSIZ) {
@@ -645,7 +645,6 @@ int erofs_write_tail_end(struct erofs_inode *inode)
 				return ret;
 		}
 		inode->idata_size = 0;
-		free(inode->idata);
 		inode->idata = NULL;
 	}
 out:
@@ -940,7 +939,6 @@ struct erofs_inode *erofs_mkfs_build_tree(struct erofs_inode *dir)
 			}
 
 			ret = erofs_write_file_from_buffer(dir, symlink);
-			free(symlink);
 			if (ret)
 				return ERR_PTR(ret);
 		} else {

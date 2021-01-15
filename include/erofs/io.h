@@ -19,18 +19,18 @@
 int dev_open(const char *devname);
 int dev_open_ro(const char *dev);
 void dev_close(void);
-int dev_write(const void *buf, u64 offset, size_t len);
+int dev_write(void *buf, u64 offset, size_t len, bool free_buf);
 int dev_read(void *buf, u64 offset, size_t len);
 int dev_fillzero(u64 offset, size_t len, bool padding);
 int dev_fsync(void);
 int dev_resize(erofs_blk_t nblocks);
 u64 dev_length(void);
 
-static inline int blk_write(const void *buf, erofs_blk_t blkaddr,
-			    u32 nblocks)
+static inline int blk_write(void *buf, erofs_blk_t blkaddr,
+			    u32 nblocks, bool free_buf)
 {
 	return dev_write(buf, blknr_to_addr(blkaddr),
-			 blknr_to_addr(nblocks));
+			 blknr_to_addr(nblocks), free_buf);
 }
 
 static inline int blk_read(void *buf, erofs_blk_t start,

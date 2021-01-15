@@ -47,7 +47,7 @@ int erofs_bh_flush_generic_write(struct erofs_buffer_head *bh, void *buf)
 	erofs_off_t offset = erofs_btell(bh, false);
 
 	DBG_BUGON(nbh->off < bh->off);
-	return dev_write(buf, offset, nbh->off - bh->off);
+	return dev_write(buf, offset, nbh->off - bh->off, true);
 }
 
 static bool erofs_bh_flush_buf_write(struct erofs_buffer_head *bh)
@@ -56,7 +56,6 @@ static bool erofs_bh_flush_buf_write(struct erofs_buffer_head *bh)
 
 	if (err)
 		return false;
-	free(bh->fsprivate);
 	return erofs_bh_flush_generic_end(bh);
 }
 

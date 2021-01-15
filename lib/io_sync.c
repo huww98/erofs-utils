@@ -12,7 +12,7 @@
 extern const char *erofs_devname;
 extern int erofs_devfd;
 
-int __dev_write(const void *buf, u64 offset, size_t len)
+int __dev_write(void *buf, u64 offset, size_t len, bool free_buf)
 {
 	int ret;
 
@@ -28,5 +28,7 @@ int __dev_write(const void *buf, u64 offset, size_t len)
 			  erofs_devname, offset, len);
 		return -ERANGE;
 	}
+	if (free_buf)
+		free(buf);
 	return 0;
 }

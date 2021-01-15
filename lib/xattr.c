@@ -526,11 +526,10 @@ static void erofs_cleanxattrs(bool sharedxattrs)
 static bool erofs_bh_flush_write_shared_xattrs(struct erofs_buffer_head *bh)
 {
 	void *buf = bh->fsprivate;
-	int err = dev_write(buf, erofs_btell(bh, false), shared_xattrs_size);
+	int err = dev_write(buf, erofs_btell(bh, false), shared_xattrs_size, true);
 
 	if (err)
 		return false;
-	free(buf);
 	return erofs_bh_flush_generic_end(bh);
 }
 
