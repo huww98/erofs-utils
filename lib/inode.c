@@ -291,33 +291,6 @@ int erofs_write_dir_file(struct erofs_inode *dir)
 	return 0;
 }
 
-/* will free buf */
-int erofs_write_file_from_buffer(struct erofs_inode *inode, char *buf)
-{
-	const unsigned int nblocks = erofs_blknr(inode->i_size);
-	int ret;
-
-	inode->datalayout = EROFS_INODE_FLAT_INLINE;
-
-	ret = __allocate_inode_bh_data(inode, nblocks);
-	if (ret)
-		return ret;
-
-	inode->idata_size = inode->i_size % EROFS_BLKSIZ;
-	if (inode->idata_size) {
-		inode->idata = malloc(inode->idata_size);
-		if (!inode->idata)
-			return -ENOMEM;
-		memcpy(inode->idata, buf + blknr_to_addr(nblocks),
-		       inode->idata_size);
-	}
-	if (nblocks)
-		blk_write(buf, inode->u.i_blkaddr, nblocks, true);
-	else
-		free(buf);
-	return 0;
-}
-
 /* rules to decide whether a file could be compressed or not */
 static bool erofs_file_is_compressible(struct erofs_inode *inode)
 {
@@ -368,32 +341,6 @@ static int write_uncompressed_file_from_fd(struct erofs_inode *inode, int fd)
 		}
 	}
 	return 0;
-}
-
-int erofs_write_file(struct erofs_inode *inode)
-{
-	int ret, fd;
-
-	if (!inode->i_size) {
-		inode->datalayout = EROFS_INODE_FLAT_PLAIN;
-		return 0;
-	}
-
-	if (cfg.c_compr_alg_master && erofs_file_is_compressible(inode)) {
-		ret = erofs_write_compressed_file(inode);
-
-		if (!ret || ret != -ENOSPC)
-			return ret;
-	}
-
-	/* fallback to all data uncompressed */
-	fd = open(inode->i_srcpath, O_RDONLY | O_BINARY);
-	if (fd < 0)
-		return -errno;
-
-	ret = write_uncompressed_file_from_fd(inode, fd);
-	close(fd);
-	return ret;
 }
 
 static bool erofs_bh_flush_write_inode(struct erofs_buffer_head *bh)
@@ -517,6 +464,27 @@ static struct erofs_bhops erofs_write_inode_bhops = {
 	.flush = erofs_bh_flush_write_inode,
 };
 
+static bool erofs_bh_flush_write_inline(struct erofs_buffer_head *bh)
+{
+	struct erofs_inode *const inode = bh->fsprivate;
+	const erofs_off_t off = erofs_btell(bh, false);
+	int ret;
+
+	ret = dev_write(inode->idata, off, inode->idata_size, true);
+	if (ret)
+		return false;
+
+	inode->idata_size = 0;
+	inode->idata = NULL;
+
+	erofs_iput(inode);
+	return erofs_bh_flush_generic_end(bh);
+}
+
+static struct erofs_bhops erofs_write_inline_bhops = {
+	.flush = erofs_bh_flush_write_inline,
+};
+
 int erofs_prepare_tail_block(struct erofs_inode *inode)
 {
 	struct erofs_buffer_head *bh;
@@ -602,26 +570,58 @@ noinline:
 	return 0;
 }
 
-static bool erofs_bh_flush_write_inline(struct erofs_buffer_head *bh)
+/* will free buf */
+int erofs_write_file_from_buffer(struct erofs_inode *inode, char *buf)
 {
-	struct erofs_inode *const inode = bh->fsprivate;
-	const erofs_off_t off = erofs_btell(bh, false);
+	const unsigned int nblocks = erofs_blknr(inode->i_size);
 	int ret;
 
-	ret = dev_write(inode->idata, off, inode->idata_size, true);
+	inode->datalayout = EROFS_INODE_FLAT_INLINE;
+
+	ret = __allocate_inode_bh_data(inode, nblocks);
 	if (ret)
-		return false;
+		return ret;
 
-	inode->idata_size = 0;
-	inode->idata = NULL;
-
-	erofs_iput(inode);
-	return erofs_bh_flush_generic_end(bh);
+	inode->idata_size = inode->i_size % EROFS_BLKSIZ;
+	if (inode->idata_size) {
+		inode->idata = malloc(inode->idata_size);
+		if (!inode->idata)
+			return -ENOMEM;
+		memcpy(inode->idata, buf + blknr_to_addr(nblocks),
+		       inode->idata_size);
+	}
+	if (nblocks)
+		blk_write(buf, inode->u.i_blkaddr, nblocks, true);
+	else
+		free(buf);
+	return 0;
 }
 
-static struct erofs_bhops erofs_write_inline_bhops = {
-	.flush = erofs_bh_flush_write_inline,
-};
+int erofs_write_file(struct erofs_inode *inode)
+{
+	int ret, fd;
+
+	if (!inode->i_size) {
+		inode->datalayout = EROFS_INODE_FLAT_PLAIN;
+		return 0;
+	}
+
+	if (cfg.c_compr_alg_master && erofs_file_is_compressible(inode)) {
+		ret = erofs_write_compressed_file(inode);
+
+		if (!ret || ret != -ENOSPC)
+			return ret;
+	}
+
+	/* fallback to all data uncompressed */
+	fd = open(inode->i_srcpath, O_RDONLY | O_BINARY);
+	if (fd < 0)
+		return -errno;
+
+	ret = write_uncompressed_file_from_fd(inode, fd);
+	close(fd);
+	return ret;
+}
 
 int erofs_write_tail_end(struct erofs_inode *inode)
 {
