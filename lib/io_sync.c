@@ -17,6 +17,25 @@ int erofs_io_drain(void)
 	return 0;
 }
 
+static bool fixed_buf_in_use;
+static char fixed_buf[IO_BLOCK_SIZE];
+
+void *erofs_io_get_fixed_buffer(void)
+{
+	if (fixed_buf_in_use)
+		return ERR_PTR(-EAGAIN);
+	fixed_buf_in_use = true;
+	return fixed_buf;
+}
+
+int dev_write_from_fixed_buffer(void *buf, u64 offset, size_t len)
+{
+	DBG_BUGON(((char *)buf - fixed_buf) < 0);
+	DBG_BUGON(((char *)buf + len - fixed_buf) > IO_BLOCK_SIZE);
+	fixed_buf_in_use = false;
+	return dev_write(buf, offset, len, false);
+}
+
 int __dev_write(void *buf, u64 offset, size_t len, bool free_buf)
 {
 	int ret;

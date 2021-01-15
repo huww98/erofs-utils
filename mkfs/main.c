@@ -338,7 +338,8 @@ static inline u32 crc32c(u32 crc, const u8 *in, size_t len)
 static int erofs_mkfs_superblock_csum_set(void)
 {
 	int ret;
-	u8 buf[EROFS_BLKSIZ];
+	void *buf = erofs_io_get_fixed_buffer();
+	DBG_BUGON(IO_BLOCK_SIZE < EROFS_BLKSIZ);
 	u32 crc;
 	struct erofs_super_block *sb;
 
@@ -368,7 +369,7 @@ static int erofs_mkfs_superblock_csum_set(void)
 	/* set up checksum field to erofs_super_block */
 	sb->checksum = cpu_to_le32(crc);
 
-	ret = blk_write(buf, 0, 1, false);
+	ret = blk_write_from_fixed_buffer(buf, 0, 1);
 	if (ret) {
 		erofs_err("failed to write checksummed superblock: %s",
 			  erofs_strerror(ret));

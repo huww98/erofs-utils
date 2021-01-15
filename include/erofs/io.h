@@ -16,9 +16,17 @@
 #define O_BINARY	0
 #endif
 
+#define IO_BLOCK_SIZE (32*1024)
+
 int erofs_io_init(void);
 void erofs_io_exit(void);
 int erofs_io_drain(void);
+/*
+ * return a buffer of size IO_BLOCK_SIZE
+ * should be passed to *_write_from_fixed_buffer function later
+ */
+void *erofs_io_get_fixed_buffer(void);
+int dev_write_from_fixed_buffer(void *buf, u64 offset, size_t len);
 int dev_open(const char *devname);
 int dev_open_ro(const char *dev);
 void dev_close(void);
@@ -34,6 +42,13 @@ static inline int blk_write(void *buf, erofs_blk_t blkaddr,
 {
 	return dev_write(buf, blknr_to_addr(blkaddr),
 			 blknr_to_addr(nblocks), free_buf);
+}
+
+static inline int blk_write_from_fixed_buffer(void *buf, erofs_blk_t blkaddr,
+			    u32 nblocks)
+{
+	return dev_write_from_fixed_buffer(buf, blknr_to_addr(blkaddr),
+			 blknr_to_addr(nblocks));
 }
 
 static inline int blk_read(void *buf, erofs_blk_t start,

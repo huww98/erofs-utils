@@ -235,10 +235,13 @@ static void fill_dirblock(char *buf, unsigned int size, unsigned int q,
 static int write_dirblock(unsigned int q, struct erofs_dentry *head,
 			  struct erofs_dentry *end, erofs_blk_t blkaddr)
 {
-	char buf[EROFS_BLKSIZ];
+	void *buf = erofs_io_get_fixed_buffer();
+	if (IS_ERR(buf))
+		return PTR_ERR(buf);
+	DBG_BUGON(IO_BLOCK_SIZE < EROFS_BLKSIZ);
 
 	fill_dirblock(buf, EROFS_BLKSIZ, q, head, end);
-	return blk_write(buf, blkaddr, 1, false);
+	return blk_write_from_fixed_buffer(buf, blkaddr, 1);
 }
 
 int erofs_write_dir_file(struct erofs_inode *dir)
@@ -334,7 +337,9 @@ static int write_uncompressed_file_from_fd(struct erofs_inode *inode, int fd)
 		return ret;
 
 	for (i = 0; i < nblocks; ++i) {
-		char buf[EROFS_BLKSIZ];
+		void *buf = erofs_io_get_fixed_buffer();
+		if (IS_ERR(buf))
+			return PTR_ERR(buf);
 
 		ret = read(fd, buf, EROFS_BLKSIZ);
 		if (ret != EROFS_BLKSIZ) {
@@ -343,7 +348,7 @@ static int write_uncompressed_file_from_fd(struct erofs_inode *inode, int fd)
 			return -EAGAIN;
 		}
 
-		ret = blk_write(buf, inode->u.i_blkaddr + i, 1, false);
+		ret = blk_write_from_fixed_buffer(buf, inode->u.i_blkaddr + i, 1);
 		if (ret)
 			return ret;
 	}
@@ -396,72 +401,77 @@ static bool erofs_bh_flush_write_inode(struct erofs_buffer_head *bh)
 	struct erofs_inode *const inode = bh->fsprivate;
 	const u16 icount = EROFS_INODE_XATTR_ICOUNT(inode->xattr_isize);
 	erofs_off_t off = erofs_btell(bh, false);
+	void *buf = erofs_io_get_fixed_buffer();
+	if (IS_ERR(buf))
+		return false;
 	union {
 		struct erofs_inode_compact dic;
 		struct erofs_inode_extended die;
-	} u = { {0}, };
+	} *u = buf;
+	DBG_BUGON(sizeof(*u) > IO_BLOCK_SIZE);
+	memset(u, 0, sizeof(*u));
 	int ret;
 
 	switch (inode->inode_isize) {
 	case sizeof(struct erofs_inode_compact):
-		u.dic.i_format = cpu_to_le16(0 | (inode->datalayout << 1));
-		u.dic.i_xattr_icount = cpu_to_le16(icount);
-		u.dic.i_mode = cpu_to_le16(inode->i_mode);
-		u.dic.i_nlink = cpu_to_le16(inode->i_nlink);
-		u.dic.i_size = cpu_to_le32((u32)inode->i_size);
+		u->dic.i_format = cpu_to_le16(0 | (inode->datalayout << 1));
+		u->dic.i_xattr_icount = cpu_to_le16(icount);
+		u->dic.i_mode = cpu_to_le16(inode->i_mode);
+		u->dic.i_nlink = cpu_to_le16(inode->i_nlink);
+		u->dic.i_size = cpu_to_le32((u32)inode->i_size);
 
-		u.dic.i_ino = cpu_to_le32(inode->i_ino[0]);
+		u->dic.i_ino = cpu_to_le32(inode->i_ino[0]);
 
-		u.dic.i_uid = cpu_to_le16((u16)inode->i_uid);
-		u.dic.i_gid = cpu_to_le16((u16)inode->i_gid);
+		u->dic.i_uid = cpu_to_le16((u16)inode->i_uid);
+		u->dic.i_gid = cpu_to_le16((u16)inode->i_gid);
 
 		switch (inode->i_mode & S_IFMT) {
 		case S_IFCHR:
 		case S_IFBLK:
 		case S_IFIFO:
 		case S_IFSOCK:
-			u.dic.i_u.rdev = cpu_to_le32(inode->u.i_rdev);
+			u->dic.i_u.rdev = cpu_to_le32(inode->u.i_rdev);
 			break;
 
 		default:
 			if (is_inode_layout_compression(inode))
-				u.dic.i_u.compressed_blocks =
+				u->dic.i_u.compressed_blocks =
 					cpu_to_le32(inode->u.i_blocks);
 			else
-				u.dic.i_u.raw_blkaddr =
+				u->dic.i_u.raw_blkaddr =
 					cpu_to_le32(inode->u.i_blkaddr);
 			break;
 		}
 		break;
 	case sizeof(struct erofs_inode_extended):
-		u.die.i_format = cpu_to_le16(1 | (inode->datalayout << 1));
-		u.die.i_xattr_icount = cpu_to_le16(icount);
-		u.die.i_mode = cpu_to_le16(inode->i_mode);
-		u.die.i_nlink = cpu_to_le32(inode->i_nlink);
-		u.die.i_size = cpu_to_le64(inode->i_size);
+		u->die.i_format = cpu_to_le16(1 | (inode->datalayout << 1));
+		u->die.i_xattr_icount = cpu_to_le16(icount);
+		u->die.i_mode = cpu_to_le16(inode->i_mode);
+		u->die.i_nlink = cpu_to_le32(inode->i_nlink);
+		u->die.i_size = cpu_to_le64(inode->i_size);
 
-		u.die.i_ino = cpu_to_le32(inode->i_ino[0]);
+		u->die.i_ino = cpu_to_le32(inode->i_ino[0]);
 
-		u.die.i_uid = cpu_to_le16(inode->i_uid);
-		u.die.i_gid = cpu_to_le16(inode->i_gid);
+		u->die.i_uid = cpu_to_le16(inode->i_uid);
+		u->die.i_gid = cpu_to_le16(inode->i_gid);
 
-		u.die.i_ctime = cpu_to_le64(inode->i_ctime);
-		u.die.i_ctime_nsec = cpu_to_le32(inode->i_ctime_nsec);
+		u->die.i_ctime = cpu_to_le64(inode->i_ctime);
+		u->die.i_ctime_nsec = cpu_to_le32(inode->i_ctime_nsec);
 
 		switch (inode->i_mode & S_IFMT) {
 		case S_IFCHR:
 		case S_IFBLK:
 		case S_IFIFO:
 		case S_IFSOCK:
-			u.die.i_u.rdev = cpu_to_le32(inode->u.i_rdev);
+			u->die.i_u.rdev = cpu_to_le32(inode->u.i_rdev);
 			break;
 
 		default:
 			if (is_inode_layout_compression(inode))
-				u.die.i_u.compressed_blocks =
+				u->die.i_u.compressed_blocks =
 					cpu_to_le32(inode->u.i_blocks);
 			else
-				u.die.i_u.raw_blkaddr =
+				u->die.i_u.raw_blkaddr =
 					cpu_to_le32(inode->u.i_blkaddr);
 			break;
 		}
@@ -472,7 +482,7 @@ static bool erofs_bh_flush_write_inode(struct erofs_buffer_head *bh)
 		BUG_ON(1);
 	}
 
-	ret = dev_write(&u, off, inode->inode_isize, false);
+	ret = dev_write_from_fixed_buffer(buf, off, inode->inode_isize);
 	if (ret)
 		return false;
 	off += inode->inode_isize;
