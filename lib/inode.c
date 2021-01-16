@@ -96,21 +96,6 @@ unsigned int erofs_iput(struct erofs_inode *inode)
 	return 0;
 }
 
-static int dentry_add_sorted(struct erofs_dentry *d, struct list_head *head)
-{
-	struct list_head *pos;
-
-	list_for_each(pos, head) {
-		struct erofs_dentry *d2 =
-			container_of(pos, struct erofs_dentry, d_child);
-
-		if (strcmp(d->name, d2->name) < 0)
-			break;
-	}
-	list_add_tail(&d->d_child, pos);
-	return 0;
-}
-
 struct erofs_dentry *erofs_d_alloc(struct erofs_inode *parent,
 				   const char *name)
 {
@@ -122,14 +107,23 @@ struct erofs_dentry *erofs_d_alloc(struct erofs_inode *parent,
 	strncpy(d->name, name, EROFS_NAME_LEN - 1);
 	d->name[EROFS_NAME_LEN - 1] = '\0';
 
-	dentry_add_sorted(d, &parent->i_subdirs);
+	list_add_tail(&d->d_child, &parent->i_subdirs);
 	return d;
 }
 
-int erofs_prepare_dir_file(struct erofs_inode *dir)
+static int comp_subdir(const void *a, const void *b)
 {
-	struct erofs_dentry *d;
-	unsigned int d_size, i_nlink;
+	const struct erofs_dentry *d_a, *d_b;
+
+	d_a = *((const struct erofs_dentry **)a);
+	d_b = *((const struct erofs_dentry **)b);
+	return strcmp(d_a->name, d_b->name);
+}
+
+int erofs_prepare_dir_file(struct erofs_inode *dir, unsigned int nr_subdirs)
+{
+	struct erofs_dentry *d, **all_d;
+	unsigned int d_size, i_nlink, i;
 
 	/* dot is pointed to the current dir inode */
 	d = erofs_d_alloc(dir, ".");
@@ -140,6 +134,22 @@ int erofs_prepare_dir_file(struct erofs_inode *dir)
 	d = erofs_d_alloc(dir, "..");
 	d->inode = erofs_igrab(dir->i_parent);
 	d->type = EROFS_FT_DIR;
+
+	/* sort subdirs */
+	nr_subdirs += 2;
+	all_d = malloc(nr_subdirs * sizeof(d));
+	if (!all_d)
+		return -ENOMEM;
+	i = 0;
+	list_for_each_entry(d, &dir->i_subdirs, d_child)
+		all_d[i++] = d;
+	DBG_BUGON(i != nr_subdirs);
+	qsort(all_d, nr_subdirs, sizeof(d), comp_subdir);
+	init_list_head(&dir->i_subdirs);
+	for (i = 0; i < nr_subdirs; i++)
+		list_add_tail(&all_d[i]->d_child, &dir->i_subdirs);
+	free(all_d);
+	all_d = NULL;
 
 	/* let's calculate dir size and update i_nlink */
 	d_size = 0;
@@ -886,6 +896,7 @@ struct erofs_inode *erofs_mkfs_build_tree(struct erofs_inode *dir)
 	DIR *_dir;
 	struct dirent *dp;
 	struct erofs_dentry *d;
+	unsigned int nr_subdirs;
 
 	ret = erofs_prepare_xattr_ibody(dir);
 	if (ret < 0)
@@ -923,6 +934,7 @@ struct erofs_inode *erofs_mkfs_build_tree(struct erofs_inode *dir)
 		return ERR_PTR(-errno);
 	}
 
+	nr_subdirs = 0;
 	while (1) {
 		/*
 		 * set errno to 0 before calling readdir() in order to
@@ -946,6 +958,7 @@ struct erofs_inode *erofs_mkfs_build_tree(struct erofs_inode *dir)
 			ret = PTR_ERR(d);
 			goto err_closedir;
 		}
+		nr_subdirs++;
 
 		/* to count i_nlink for directories */
 		d->type = (dp->d_type == DT_DIR ?
@@ -958,7 +971,7 @@ struct erofs_inode *erofs_mkfs_build_tree(struct erofs_inode *dir)
 	}
 	closedir(_dir);
 
-	ret = erofs_prepare_dir_file(dir);
+	ret = erofs_prepare_dir_file(dir, nr_subdirs);
 	if (ret)
 		goto err;
 
