@@ -16,7 +16,7 @@
 #define EROFS_CONFIG_COMPR_MAX_SZ           (900  * 1024)
 #define EROFS_CONFIG_COMPR_MIN_SZ           (32   * 1024)
 
-int erofs_write_compressed_file(struct erofs_inode *inode);
+int erofs_write_compressed_file(struct erofs_inode *inode, int fd);
 
 int z_erofs_compress_init(void);
 int z_erofs_compress_exit(void);

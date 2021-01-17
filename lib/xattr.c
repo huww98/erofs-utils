@@ -401,7 +401,7 @@ static int erofs_droid_xattr_set_caps(struct erofs_inode *inode)
 }
 #endif
 
-int erofs_prepare_xattr_ibody(struct erofs_inode *inode)
+int erofs_prepare_xattr_ibody(struct erofs_inode *inode, const char *path)
 {
 	int ret;
 	struct inode_xattr_node *node;
@@ -411,7 +411,7 @@ int erofs_prepare_xattr_ibody(struct erofs_inode *inode)
 	if (cfg.c_inline_xattr_tolerance < 0)
 		return 0;
 
-	ret = read_xattrs_from_file(inode->i_srcpath, inode->i_mode, ixattrs);
+	ret = read_xattrs_from_file(path, inode->i_mode, ixattrs);
 	if (ret < 0)
 		return ret;
 

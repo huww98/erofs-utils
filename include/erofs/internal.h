@@ -137,8 +137,6 @@ struct erofs_inode {
 		u32 i_rdev;
 	} u;
 
-	char i_srcpath[PATH_MAX + 1];
-
 	unsigned char datalayout;
 	unsigned char inode_isize;
 	/* inline tail-end packing size */

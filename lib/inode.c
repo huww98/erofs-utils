@@ -563,9 +563,9 @@ int erofs_write_file_from_buffer(struct erofs_inode *inode, char *buf)
 	return ret;
 }
 
-int erofs_write_file(struct erofs_inode *inode)
+int erofs_write_file(struct erofs_inode *inode, int fd)
 {
-	int ret, fd;
+	int ret;
 
 	if (!inode->i_size) {
 		ret = erofs_prepare_inode_buffer_for_uncompressed(inode);
@@ -576,23 +576,23 @@ int erofs_write_file(struct erofs_inode *inode)
 	}
 
 	if (cfg.c_compr_alg_master && erofs_file_is_compressible(inode)) {
-		ret = erofs_write_compressed_file(inode);
+		ret = erofs_write_compressed_file(inode, fd);
 
 		if (!ret) {
 			ret = erofs_prepare_inode_buffer_for_compressed(inode);
+			goto compressed_out;
+		}
+		if (ret != -ENOSPC) {
+compressed_out:
+			close(fd);
 			return ret;
 		}
-		if (ret != -ENOSPC)
-			return ret;
 	}
 
 	/* fallback to all data uncompressed */
 	ret = erofs_prepare_inode_buffer_for_uncompressed(inode);
 	if (ret)
 		return ret;
-	fd = open(inode->i_srcpath, O_RDONLY | O_BINARY);
-	if (fd < 0)
-		return -errno;
 	struct erofs_fd *erofs_fd = erofs_new_fd(fd);
 	if (IS_ERR(erofs_fd))
 		return PTR_ERR(erofs_fd);
@@ -760,16 +760,12 @@ int erofs_fill_inode(struct erofs_inode *inode,
 		return -EINVAL;
 	}
 
-	strncpy(inode->i_srcpath, path, sizeof(inode->i_srcpath) - 1);
-	inode->i_srcpath[sizeof(inode->i_srcpath) - 1] = '\0';
-
 	inode->dev = st->st_dev;
 	inode->i_ino[1] = st->st_ino;
 
 	if (erofs_should_use_inode_extended(inode)) {
 		if (cfg.c_force_inodeversion == FORCE_INODE_COMPACT) {
-			erofs_err("file %s cannot be in compact form",
-				  inode->i_srcpath);
+			erofs_err("file %s cannot be in compact form", path);
 			return -EINVAL;
 		}
 		inode->inode_isize = sizeof(struct erofs_inode_extended);
@@ -890,7 +886,8 @@ void erofs_d_invalidate(struct erofs_dentry *d)
 	erofs_iput(inode);
 }
 
-struct erofs_inode *erofs_mkfs_build_tree(struct erofs_inode *dir)
+struct erofs_inode *erofs_mkfs_build_tree(struct erofs_inode *dir,
+		const char *src_path)
 {
 	int ret;
 	DIR *_dir;
@@ -898,7 +895,7 @@ struct erofs_inode *erofs_mkfs_build_tree(struct erofs_inode *dir)
 	struct erofs_dentry *d;
 	unsigned int nr_subdirs;
 
-	ret = erofs_prepare_xattr_ibody(dir);
+	ret = erofs_prepare_xattr_ibody(dir, src_path);
 	if (ret < 0)
 		return ERR_PTR(ret);
 
@@ -908,7 +905,7 @@ struct erofs_inode *erofs_mkfs_build_tree(struct erofs_inode *dir)
 
 			if (!symlink)
 				return ERR_PTR(-ENOMEM);
-			ret = readlink(dir->i_srcpath, symlink, dir->i_size);
+			ret = readlink(src_path, symlink, dir->i_size);
 			if (ret < 0) {
 				free(symlink);
 				return ERR_PTR(-errno);
@@ -918,7 +915,10 @@ struct erofs_inode *erofs_mkfs_build_tree(struct erofs_inode *dir)
 			if (ret)
 				return ERR_PTR(ret);
 		} else {
-			ret = erofs_write_file(dir);
+			int fd = open(src_path, O_RDONLY | O_BINARY);
+			if (fd < 0)
+				return ERR_PTR(-errno);
+			ret = erofs_write_file(dir, fd);
 			if (ret)
 				return ERR_PTR(ret);
 		}
@@ -927,10 +927,10 @@ struct erofs_inode *erofs_mkfs_build_tree(struct erofs_inode *dir)
 		return dir;
 	}
 
-	_dir = opendir(dir->i_srcpath);
+	_dir = opendir(src_path);
 	if (!_dir) {
 		erofs_err("%s, failed to opendir at %s: %s",
-			  __func__, dir->i_srcpath, erofs_strerror(errno));
+			  __func__, src_path, erofs_strerror(errno));
 		return ERR_PTR(-errno);
 	}
 
@@ -950,7 +950,7 @@ struct erofs_inode *erofs_mkfs_build_tree(struct erofs_inode *dir)
 			continue;
 
 		/* skip if it's a exclude file */
-		if (erofs_is_exclude_path(dir->i_srcpath, dp->d_name))
+		if (erofs_is_exclude_path(src_path, dp->d_name))
 			continue;
 
 		d = erofs_d_alloc(dir, dp->d_name);
@@ -992,7 +992,7 @@ struct erofs_inode *erofs_mkfs_build_tree(struct erofs_inode *dir)
 		}
 
 		ret = snprintf(buf, PATH_MAX, "%s/%s",
-			       dir->i_srcpath, d->name);
+			       src_path, d->name);
 		if (ret < 0 || ret >= PATH_MAX) {
 			/* ignore the too long path */
 			goto fail;
@@ -1013,7 +1013,7 @@ fail:
 
 		erofs_d_invalidate(d);
 		erofs_info("add file %s/%s (nid %llu, type %d)",
-			   dir->i_srcpath, d->name, (unsigned long long)d->nid,
+			   src_path, d->name, (unsigned long long)d->nid,
 			   d->type);
 	}
 	erofs_write_dir_file(dir);
@@ -1046,6 +1046,6 @@ struct erofs_inode *erofs_mkfs_build_tree_from_path(struct erofs_inode *parent,
 	else
 		inode->i_parent = inode;	/* rootdir mark */
 
-	return erofs_mkfs_build_tree(inode);
+	return erofs_mkfs_build_tree(inode, path);
 }
 

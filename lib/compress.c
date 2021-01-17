@@ -175,8 +175,7 @@ static int vle_compress_one(struct erofs_inode *inode,
 					      &count, dst, EROFS_BLKSIZ);
 		if (ret <= 0) {
 			if (ret != -EAGAIN) {
-				erofs_err("failed to compress %s: %s",
-					  inode->i_srcpath,
+				erofs_err("failed to compress: %s",
 					  erofs_strerror(ret));
 			}
 nocompression:
@@ -394,30 +393,24 @@ int z_erofs_convert_to_compacted_format(struct erofs_inode *inode,
 	return 0;
 }
 
-int erofs_write_compressed_file(struct erofs_inode *inode)
+int erofs_write_compressed_file(struct erofs_inode *inode, int fd)
 {
 	struct erofs_buffer_head *bh;
 	struct z_erofs_vle_compress_ctx ctx;
 	erofs_off_t remaining;
 	erofs_blk_t blkaddr, compressed_blocks;
 	unsigned int legacymetasize;
-	int ret, fd;
+	int ret;
 
 	u8 *compressmeta = malloc(vle_compressmeta_capacity(inode->i_size));
 	if (!compressmeta)
 		return -ENOMEM;
 
-	fd = open(inode->i_srcpath, O_RDONLY | O_BINARY);
-	if (fd < 0) {
-		ret = -errno;
-		goto err_free;
-	}
-
 	/* allocate main data buffer */
 	bh = erofs_balloc(DATA, 0, 0, 0);
 	if (IS_ERR(bh)) {
 		ret = PTR_ERR(bh);
-		goto err_close;
+		goto err;
 	}
 
 	memset(compressmeta, 0, Z_EROFS_LEGACY_MAP_HEADER_SIZE);
@@ -461,12 +454,11 @@ int erofs_write_compressed_file(struct erofs_inode *inode)
 
 	vle_write_indexes_final(&ctx);
 
-	close(fd);
 	ret = erofs_bh_balloon(bh, blknr_to_addr(compressed_blocks));
 	DBG_BUGON(ret < 0);
 
-	erofs_info("compressed %s (%llu bytes) into %u blocks",
-		   inode->i_srcpath, (unsigned long long)inode->i_size,
+	erofs_info("compressed file (%llu bytes) into %u blocks",
+		   (unsigned long long)inode->i_size,
 		   compressed_blocks);
 
 	/*
@@ -491,9 +483,7 @@ int erofs_write_compressed_file(struct erofs_inode *inode)
 
 err_bdrop:
 	erofs_bdrop(bh, true);	/* revoke buffer */
-err_close:
-	close(fd);
-err_free:
+err:
 	free(compressmeta);
 	return ret;
 }

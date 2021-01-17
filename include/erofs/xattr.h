@@ -42,7 +42,7 @@
 #define XATTR_NAME_POSIX_ACL_DEFAULT "system.posix_acl_default"
 #endif
 
-int erofs_prepare_xattr_ibody(struct erofs_inode *inode);
+int erofs_prepare_xattr_ibody(struct erofs_inode *inode, const char *path);
 char *erofs_export_xattr_ibody(struct list_head *ixattrs, unsigned int size);
 int erofs_build_shared_xattrs_from_path(const char *path);
 
