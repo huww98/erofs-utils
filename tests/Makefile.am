@@ -82,6 +82,10 @@ TESTS_OUT += erofs/013-out
 TESTS += erofs/014
 TESTS_OUT += erofs/014-out
 
+# 015 - battach on full buffer block
+TESTS += erofs/015
+TESTS_OUT += erofs/015-out
+
 dist_check_SCRIPTS = common/rc $(TESTS)
 dist_check_DATA = $(TESTS_OUT)
 
