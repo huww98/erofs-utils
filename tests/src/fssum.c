@@ -31,6 +31,7 @@
 #include <endian.h>
 
 #define CS_SIZE 16
+#define CS_STR_SIZE (CS_SIZE * 2 + 1)
 #define CHUNKS	128
 
 #ifdef __linux__
@@ -209,16 +210,13 @@ sum_add_time(sum_t *dst, time_t t)
 	sum_add_u64(dst, t);
 }
 
-char *
-sum_to_string(sum_t *dst)
+void
+sum_to_string(sum_t *dst, char *s)
 {
 	int i;
-	char *s = alloc(CS_SIZE * 2 + 1);
 
 	for (i = 0; i < CS_SIZE; ++i)
 		sprintf(s + i * 2, "%02x", dst->out[i]);
-
-	return s;
 }
 
 int
@@ -523,7 +521,7 @@ sum(int dirfd, int level, sum_t *dircs, char *path_prefix, char *path_in)
 		exit(-1);
 	}
 
-	d = fdopendir(dirfd);
+	d = fdopendir(dup(dirfd));
 	if (!d) {
 		perror("opendir");
 		exit(-1);
@@ -547,6 +545,7 @@ sum(int dirfd, int level, sum_t *dircs, char *path_prefix, char *path_in)
 		}
 		++entries;
 	}
+	closedir(d);
 	qsort(namelist, entries, sizeof(*namelist), namecmp);
 	for (i = 0; i < entries; ++i) {
 		struct stat64 st;
@@ -674,21 +673,19 @@ sum(int dirfd, int level, sum_t *dircs, char *path_prefix, char *path_in)
 		sum_fini(&meta);
 		if (gen_manifest || in_manifest) {
 			char *fn;
-			char *m;
-			char *c;
+			char m[CS_STR_SIZE];
+			char c[CS_STR_SIZE];
 
 			if (S_ISDIR(st.st_mode))
 				strcat(path, "/");
 			fn = escape(path);
-			m = sum_to_string(&meta);
-			c = sum_to_string(&cs);
+			sum_to_string(&meta, m);
+			sum_to_string(&cs, c);
 
 			if (gen_manifest)
 				fprintf(out_fp, "%s %s %s\n", fn, m, c);
 			if (in_manifest)
 				check_manifest(fn, m, c, 0);
-			free(c);
-			free(m);
 			free(fn);
 		}
 		sum_add_sum(dircs, &cs);
@@ -696,6 +693,9 @@ sum(int dirfd, int level, sum_t *dircs, char *path_prefix, char *path_in)
 next:
 		free(path);
 	}
+	for (i = 0; i < entries; ++i)
+		free(namelist[i]);
+	free(namelist);
 }
 
 int
@@ -713,6 +713,7 @@ main(int argc, char *argv[])
 	int elen;
 	int n_flags = 0;
 	const char *allopts = "heEfuUgGoOaAmMcCdDtTsSnNw:r:vx:";
+	char sum_string[CS_STR_SIZE];
 
 	out_fp = stdout;
 	while ((c = getopt(argc, argv, allopts)) != EOF) {
@@ -871,9 +872,11 @@ main(int argc, char *argv[])
 		if (!gen_manifest)
 			fprintf(out_fp, "%s:", flagstring);
 
-		fprintf(out_fp, "%s\n", sum_to_string(&cs));
+		sum_to_string(&cs, sum_string);
+		fprintf(out_fp, "%s\n", sum_string);
 	} else {
-		if (strcmp(checksum, sum_to_string(&cs)) == 0) {
+		sum_to_string(&cs, sum_string);
+		if (strcmp(checksum, sum_string) == 0) {
 			printf("OK\n");
 			exit(0);
 		} else {
