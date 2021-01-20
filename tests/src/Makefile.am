@@ -2,12 +2,12 @@
 # Makefile.am
 
 AUTOMAKE_OPTIONS	= foreign
-noinst_PROGRAMS		= fssum
+check_PROGRAMS		= fssum
 
-fssum_SOURCES = md5.c fssum.c
+fssum_SOURCES = md5.c md5.h fssum.c
 
 if ENABLE_LZ4
-noinst_PROGRAMS += badlz4
+check_PROGRAMS += badlz4
 badlz4_SOURCES = badlz4.c
 badlz4_LDADD = ${liblz4_LIBS}
 endif

@@ -199,7 +199,7 @@ _check_results()
 	[ -z $srcdir ] && return 0
 	[ -f $seqres.notrun ] && return 0
 
-	if ! diff `dirname $0`/$seq.out $tmp.out >/dev/null 2>&1 ; then
+	if ! diff `dirname $0`/$seq-out $tmp.out >/dev/null 2>&1 ; then
 		mv $tmp.out $seqres.out.bad
 		return 1
 	fi

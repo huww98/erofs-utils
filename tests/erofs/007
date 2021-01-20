@@ -21,7 +21,7 @@ echo "QA output created by $seq"
 [ -z "$lz4_on" ] && \
 	_notrun "lz4 compression is disabled, skipped."
 
-$here/src/badlz4 >> $seqres.full 2>&1 || _fail "--> lz4 test FAILED"
+./src/badlz4 >> $seqres.full 2>&1 || _fail "--> lz4 test FAILED"
 
 echo Silence is golden
 status=0
