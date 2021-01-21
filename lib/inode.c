@@ -22,8 +22,6 @@
 #include "erofs/xattr.h"
 #include "erofs/exclude.h"
 
-struct erofs_sb_info sbi;
-
 #define S_SHIFT                 12
 static unsigned char erofs_ftype_by_mode[S_IFMT >> S_SHIFT] = {
 	[S_IFREG >> S_SHIFT]  = EROFS_FT_REG_FILE,
@@ -150,7 +148,7 @@ static int __allocate_inode_bh_data(struct erofs_inode *inode,
 	inode->bh_data = bh;
 
 	/* get blkaddr of the bh */
-	ret = erofs_mapbh(bh->block, true);
+	ret = erofs_mapbh(bh->block);
 	DBG_BUGON(ret < 0);
 
 	/* write blocks except for the tail-end block */
@@ -524,7 +522,7 @@ int erofs_prepare_tail_block(struct erofs_inode *inode)
 		bh->op = &erofs_skip_write_bhops;
 
 		/* get blkaddr of bh */
-		ret = erofs_mapbh(bh->block, true);
+		ret = erofs_mapbh(bh->block);
 		DBG_BUGON(ret < 0);
 		inode->u.i_blkaddr = bh->block->blkaddr;
 
@@ -533,7 +531,7 @@ int erofs_prepare_tail_block(struct erofs_inode *inode)
 	}
 	/* expend a block as the tail block (should be successful) */
 	ret = erofs_bh_balloon(bh, EROFS_BLKSIZ);
-	DBG_BUGON(ret);
+	DBG_BUGON(ret < 0);
 	return 0;
 }
 
@@ -634,7 +632,7 @@ int erofs_write_tail_end(struct erofs_inode *inode)
 		int ret;
 		erofs_off_t pos;
 
-		erofs_mapbh(bh->block, true);
+		erofs_mapbh(bh->block);
 		pos = erofs_btell(bh, true) - EROFS_BLKSIZ;
 		ret = dev_write(inode->idata, pos, inode->idata_size);
 		if (ret)
@@ -698,32 +696,42 @@ int erofs_droid_inode_fsconfig(struct erofs_inode *inode,
 	/* filesystem_config does not preserve file type bits */
 	mode_t stat_file_type_mask = st->st_mode & S_IFMT;
 	unsigned int uid = 0, gid = 0, mode = 0;
-	char *fspath;
+	const char *fspath;
+	char *decorated = NULL;
 
 	inode->capabilities = 0;
-	if (cfg.fs_config_file)
-		canned_fs_config(erofs_fspath(path),
-				 S_ISDIR(st->st_mode),
-				 cfg.target_out_path,
-				 &uid, &gid, &mode, &inode->capabilities);
-	else if (cfg.mount_point) {
-		if (asprintf(&fspath, "%s/%s", cfg.mount_point,
+	if (!cfg.fs_config_file && !cfg.mount_point)
+		return 0;
+
+	if (!cfg.mount_point ||
+	/* have to drop the mountpoint for rootdir of canned fsconfig */
+	    (cfg.fs_config_file && erofs_fspath(path)[0] == '\0')) {
+		fspath = erofs_fspath(path);
+	} else {
+		if (asprintf(&decorated, "%s/%s", cfg.mount_point,
 			     erofs_fspath(path)) <= 0)
 			return -ENOMEM;
+		fspath = decorated;
+	}
 
+	if (cfg.fs_config_file)
+		canned_fs_config(fspath, S_ISDIR(st->st_mode),
+				 cfg.target_out_path,
+				 &uid, &gid, &mode, &inode->capabilities);
+	else
 		fs_config(fspath, S_ISDIR(st->st_mode),
 			  cfg.target_out_path,
 			  &uid, &gid, &mode, &inode->capabilities);
-		free(fspath);
-	}
-	st->st_uid = uid;
-	st->st_gid = gid;
-	st->st_mode = mode | stat_file_type_mask;
 
 	erofs_dbg("/%s -> mode = 0x%x, uid = 0x%x, gid = 0x%x, "
 		  "capabilities = 0x%" PRIx64 "\n",
-		  erofs_fspath(path),
-		  mode, uid, gid, inode->capabilities);
+		  fspath, mode, uid, gid, inode->capabilities);
+
+	if (decorated)
+		free(decorated);
+	st->st_uid = uid;
+	st->st_gid = gid;
+	st->st_mode = mode | stat_file_type_mask;
 	return 0;
 }
 #else
@@ -859,8 +867,10 @@ struct erofs_inode *erofs_iget_from_path(const char *path, bool is_src)
 		return inode;
 
 	ret = erofs_fill_inode(inode, &st, path);
-	if (ret)
+	if (ret) {
+		free(inode);
 		return ERR_PTR(ret);
+	}
 
 	return inode;
 }
@@ -871,7 +881,7 @@ void erofs_fixup_meta_blkaddr(struct erofs_inode *rootdir)
 	struct erofs_buffer_head *const bh = rootdir->bh;
 	erofs_off_t off, meta_offset;
 
-	erofs_mapbh(bh->block, true);
+	erofs_mapbh(bh->block);
 	off = erofs_btell(bh, false);
 
 	if (off > rootnid_maxoffset)
@@ -890,7 +900,7 @@ erofs_nid_t erofs_lookupnid(struct erofs_inode *inode)
 	if (!bh)
 		return inode->nid;
 
-	erofs_mapbh(bh->block, true);
+	erofs_mapbh(bh->block);
 	off = erofs_btell(bh, false);
 
 	meta_offset = blknr_to_addr(sbi.meta_blkaddr);

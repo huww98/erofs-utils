@@ -6,7 +6,6 @@
  */
 #include <stdlib.h>
 #include <string.h>
-#include <execinfo.h>
 #include <signal.h>
 #include <libgen.h>
 #include <fuse.h>
@@ -72,6 +71,12 @@ static int erofsfuse_read(const char *path, char *buffer,
 	if (ret)
 		return ret;
 
+	if (offset >= vi.i_size)
+		return 0;
+
+	if (offset + size > vi.i_size)
+		size = vi.i_size - offset;
+
 	ret = erofs_pread(&vi, buffer, size, offset);
 	if (ret)
 		return ret;
@@ -80,10 +85,16 @@ static int erofsfuse_read(const char *path, char *buffer,
 
 static int erofsfuse_readlink(const char *path, char *buffer, size_t size)
 {
-	int ret = erofsfuse_read(path, buffer, size, 0, NULL);
+	int ret;
+	size_t path_len;
+
+	erofs_dbg("path:%s size=%zd", path, size);
+	ret = erofsfuse_read(path, buffer, size, 0, NULL);
 
 	if (ret < 0)
 		return ret;
+	path_len = min(size - 1, (size_t)ret);
+	buffer[path_len] = '\0';
 	return 0;
 }
 
@@ -168,6 +179,9 @@ static int optional_opt_func(void *data, const char *arg, int key,
 	return 1;
 }
 
+#if defined(HAVE_EXECINFO_H) && defined(HAVE_BACKTRACE)
+#include <execinfo.h>
+
 static void signal_handle_sigsegv(int signal)
 {
 	void *array[10];
@@ -187,7 +201,7 @@ static void signal_handle_sigsegv(int signal)
 	erofs_dump("========================================\n");
 	abort();
 }
-
+#endif
 
 int main(int argc, char *argv[])
 {
@@ -197,11 +211,13 @@ int main(int argc, char *argv[])
 	erofs_init_configure();
 	fprintf(stderr, "%s %s\n", basename(argv[0]), cfg.c_version);
 
+#if defined(HAVE_EXECINFO_H) && defined(HAVE_BACKTRACE)
 	if (signal(SIGSEGV, signal_handle_sigsegv) == SIG_ERR) {
 		fprintf(stderr, "failed to initialize signals\n");
 		ret = -errno;
 		goto err;
 	}
+#endif
 
 	/* parse options */
 	ret = fuse_opt_parse(&args, &fusecfg, option_spec, optional_opt_func);

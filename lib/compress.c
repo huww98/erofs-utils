@@ -416,7 +416,7 @@ int erofs_write_compressed_file(struct erofs_inode *inode)
 
 	memset(compressmeta, 0, Z_EROFS_LEGACY_MAP_HEADER_SIZE);
 
-	blkaddr = erofs_mapbh(bh->block, true);	/* start_blkaddr */
+	blkaddr = erofs_mapbh(bh->block);	/* start_blkaddr */
 	ctx.blkaddr = blkaddr;
 	ctx.metacur = compressmeta + Z_EROFS_LEGACY_MAP_HEADER_SIZE;
 	ctx.head = ctx.tail = 0;
@@ -457,7 +457,7 @@ int erofs_write_compressed_file(struct erofs_inode *inode)
 
 	close(fd);
 	ret = erofs_bh_balloon(bh, blknr_to_addr(compressed_blocks));
-	DBG_BUGON(ret);
+	DBG_BUGON(ret < 0);
 
 	erofs_info("compressed %s (%llu bytes) into %u blocks",
 		   inode->i_srcpath, (unsigned long long)inode->i_size,
