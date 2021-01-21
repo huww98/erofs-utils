@@ -71,6 +71,12 @@ static int erofsfuse_read(const char *path, char *buffer,
 	if (ret)
 		return ret;
 
+	if (offset >= vi.i_size)
+		return 0;
+
+	if (offset + size > vi.i_size)
+		size = vi.i_size - offset;
+
 	ret = erofs_pread(&vi, buffer, size, offset);
 	if (ret)
 		return ret;
@@ -79,10 +85,16 @@ static int erofsfuse_read(const char *path, char *buffer,
 
 static int erofsfuse_readlink(const char *path, char *buffer, size_t size)
 {
-	int ret = erofsfuse_read(path, buffer, size, 0, NULL);
+	int ret;
+	size_t path_len;
+
+	erofs_dbg("path:%s size=%zd", path, size);
+	ret = erofsfuse_read(path, buffer, size, 0, NULL);
 
 	if (ret < 0)
 		return ret;
+	path_len = min(size - 1, (size_t)ret);
+	buffer[path_len] = '\0';
 	return 0;
 }
 
