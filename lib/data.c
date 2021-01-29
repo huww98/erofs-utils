@@ -29,6 +29,7 @@ static int erofs_map_blocks_flatmode(struct erofs_inode *inode,
 	if (offset >= inode->i_size) {
 		/* leave out-of-bound access unmapped */
 		map->m_flags = 0;
+		map->m_plen = 0;
 		goto out;
 	}
 
@@ -91,9 +92,13 @@ static int erofs_read_raw_data(struct erofs_inode *inode, char *buffer,
 
 		if (!(map.m_flags & EROFS_MAP_MAPPED)) {
 			if (!map.m_llen) {
+				/* reached EOF */
+				memset(buffer + ptr - offset, 0,
+				       offset + size - ptr);
 				ptr = offset + size;
 				continue;
 			}
+			memset(buffer + map.m_la - offset, 0, map.m_llen);
 			ptr = map.m_la + map.m_llen;
 			continue;
 		}
@@ -138,6 +143,7 @@ static int z_erofs_read_data(struct erofs_inode *inode, char *buffer,
 			return ret;
 
 		if (!(map.m_flags & EROFS_MAP_MAPPED)) {
+			memset(buffer + map.m_la - offset, 0, map.m_llen);
 			end = map.m_la;
 			continue;
 		}
