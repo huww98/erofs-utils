@@ -111,6 +111,234 @@ struct erofs_dentry *erofs_d_alloc(struct erofs_inode *parent,
 	return d;
 }
 
+static bool erofs_should_use_inode_extended(struct erofs_inode *inode)
+{
+	if (cfg.c_force_inodeversion == FORCE_INODE_EXTENDED)
+		return true;
+	if (inode->i_size > UINT_MAX)
+		return true;
+	if (inode->i_uid > USHRT_MAX)
+		return true;
+	if (inode->i_gid > USHRT_MAX)
+		return true;
+	if (inode->i_nlink > USHRT_MAX)
+		return true;
+	return false;
+}
+
+static u32 erofs_new_encode_dev(dev_t dev)
+{
+	const unsigned int major = major(dev);
+	const unsigned int minor = minor(dev);
+
+	return (minor & 0xff) | (major << 8) | ((minor & ~0xff) << 12);
+}
+
+#ifdef WITH_ANDROID
+int erofs_droid_inode_fsconfig(struct erofs_inode *inode,
+			       struct stat64 *st,
+			       const char *path)
+{
+	/* filesystem_config does not preserve file type bits */
+	mode_t stat_file_type_mask = st->st_mode & S_IFMT;
+	unsigned int uid = 0, gid = 0, mode = 0;
+	const char *fspath;
+	char *decorated = NULL;
+
+	inode->capabilities = 0;
+	if (!cfg.fs_config_file && !cfg.mount_point)
+		return 0;
+
+	if (!cfg.mount_point ||
+	/* have to drop the mountpoint for rootdir of canned fsconfig */
+	    (cfg.fs_config_file && erofs_fspath(path)[0] == '\0')) {
+		fspath = erofs_fspath(path);
+	} else {
+		if (asprintf(&decorated, "%s/%s", cfg.mount_point,
+			     erofs_fspath(path)) <= 0)
+			return -ENOMEM;
+		fspath = decorated;
+	}
+
+	if (cfg.fs_config_file)
+		canned_fs_config(fspath, S_ISDIR(st->st_mode),
+				 cfg.target_out_path,
+				 &uid, &gid, &mode, &inode->capabilities);
+	else
+		fs_config(fspath, S_ISDIR(st->st_mode),
+			  cfg.target_out_path,
+			  &uid, &gid, &mode, &inode->capabilities);
+
+	erofs_dbg("/%s -> mode = 0x%x, uid = 0x%x, gid = 0x%x, "
+		  "capabilities = 0x%" PRIx64 "\n",
+		  fspath, mode, uid, gid, inode->capabilities);
+
+	if (decorated)
+		free(decorated);
+	st->st_uid = uid;
+	st->st_gid = gid;
+	st->st_mode = mode | stat_file_type_mask;
+	return 0;
+}
+#else
+static int erofs_droid_inode_fsconfig(struct erofs_inode *inode,
+				      struct stat64 *st,
+				      const char *path)
+{
+	return 0;
+}
+#endif
+
+int erofs_fill_inode(struct erofs_inode *inode,
+		     struct stat64 *st,
+		     const char *path)
+{
+	int err = erofs_droid_inode_fsconfig(inode, st, path);
+
+	if (err)
+		return err;
+	inode->i_mode = st->st_mode;
+	inode->i_uid = cfg.c_uid == -1 ? st->st_uid : cfg.c_uid;
+	inode->i_gid = cfg.c_gid == -1 ? st->st_gid : cfg.c_gid;
+	inode->i_ctime = st->st_ctime;
+	inode->i_ctime_nsec = st->st_ctim.tv_nsec;
+
+	switch (cfg.c_timeinherit) {
+	case TIMESTAMP_CLAMPING:
+		if (st->st_ctime < sbi.build_time)
+			break;
+	case TIMESTAMP_FIXED:
+		inode->i_ctime = sbi.build_time;
+		inode->i_ctime_nsec = sbi.build_time_nsec;
+	default:
+		break;
+	}
+	inode->i_nlink = 1;	/* fix up later if needed */
+
+	switch (inode->i_mode & S_IFMT) {
+	case S_IFCHR:
+	case S_IFBLK:
+	case S_IFIFO:
+	case S_IFSOCK:
+		inode->u.i_rdev = erofs_new_encode_dev(st->st_rdev);
+	case S_IFDIR:
+		inode->i_size = 0;
+		break;
+	case S_IFREG:
+	case S_IFLNK:
+		inode->i_size = st->st_size;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	inode->dev = st->st_dev;
+	inode->i_ino[1] = st->st_ino;
+
+	if (erofs_should_use_inode_extended(inode)) {
+		if (cfg.c_force_inodeversion == FORCE_INODE_COMPACT) {
+			erofs_err("file %s cannot be in compact form", path);
+			return -EINVAL;
+		}
+		inode->inode_isize = sizeof(struct erofs_inode_extended);
+	} else {
+		inode->inode_isize = sizeof(struct erofs_inode_compact);
+	}
+
+	list_add(&inode->i_hash,
+		 &inode_hashtable[(st->st_ino ^ st->st_dev) %
+				  NR_INODE_HASHTABLE]);
+	return 0;
+}
+
+struct erofs_inode *erofs_new_inode(void)
+{
+	static unsigned int counter;
+	struct erofs_inode *inode;
+
+	inode = malloc(sizeof(struct erofs_inode));
+	if (!inode)
+		return ERR_PTR(-ENOMEM);
+
+	inode->i_parent = NULL;	/* also used to indicate a new inode */
+
+	inode->i_ino[0] = counter++;	/* inode serial number */
+	inode->i_count = 1;
+
+	init_list_head(&inode->i_subdirs);
+	init_list_head(&inode->i_xattrs);
+
+	inode->idata_size = 0;
+	inode->xattr_isize = 0;
+	inode->extent_isize = 0;
+
+	inode->bh = inode->bh_inline = inode->bh_data = NULL;
+	inode->idata = NULL;
+	return inode;
+}
+
+/* get the inode from the (source) path */
+struct erofs_inode *erofs_iget_from_path(int dirfd, const char *path,
+					 bool is_src)
+{
+	struct stat64 st;
+	struct erofs_inode *inode;
+	int ret;
+
+	/* currently, only source path is supported */
+	if (!is_src)
+		return ERR_PTR(-EINVAL);
+
+	ret = fstatat64(dirfd, path, &st, AT_SYMLINK_NOFOLLOW);
+	if (ret)
+		return ERR_PTR(-errno);
+
+	/*
+	 * lookup in hash table first, if it already exists we have a
+	 * hard-link, just return it. Also don't lookup for directories
+	 * since hard-link directory isn't allowed.
+	 */
+	if (!S_ISDIR(st.st_mode)) {
+		inode = erofs_iget(st.st_dev, st.st_ino);
+		if (inode)
+			return inode;
+	}
+
+	/* cannot find in the inode cache */
+	inode = erofs_new_inode();
+	if (IS_ERR(inode))
+		return inode;
+
+	ret = erofs_fill_inode(inode, &st, path);
+	if (ret) {
+		free(inode);
+		return ERR_PTR(ret);
+	}
+
+	return inode;
+}
+
+static struct erofs_inode *erofs_mkfs_iget(struct erofs_inode *parent,
+					   int parent_fd,
+					   const char *name)
+{
+	struct erofs_inode *const inode =
+		erofs_iget_from_path(parent_fd, name, true);
+
+	if (IS_ERR(inode))
+		return inode;
+
+	/* a hardlink to the existed inode */
+	if (inode->i_parent) {
+		++inode->i_nlink;
+		return inode;
+	}
+
+	/* a completely new inode is found */
+	inode->i_parent = parent;
+	return inode;
+}
+
 static int comp_subdir(const void *a, const void *b)
 {
 	const struct erofs_dentry *d_a, *d_b;
@@ -120,7 +348,8 @@ static int comp_subdir(const void *a, const void *b)
 	return strcmp(d_a->name, d_b->name);
 }
 
-int erofs_prepare_dir_file(struct erofs_inode *dir, unsigned int nr_subdirs)
+int erofs_prepare_dir_file(struct erofs_inode *dir, int dir_fd,
+			   unsigned int nr_subdirs)
 {
 	struct erofs_dentry *d, **all_d;
 	unsigned int d_size, i_nlink, i;
@@ -161,6 +390,10 @@ int erofs_prepare_dir_file(struct erofs_inode *dir, unsigned int nr_subdirs)
 			d_size = round_up(d_size, EROFS_BLKSIZ);
 		d_size += len;
 
+		d->inode = erofs_mkfs_iget(dir, dir_fd, d->name);
+		if (IS_ERR(d->inode))
+			return PTR_ERR(d->inode);
+		d->type = erofs_mode_to_ftype(d->inode->i_mode);
 		i_nlink += (d->type == EROFS_FT_DIR);
 	}
 	dir->i_size = d_size;
@@ -568,6 +801,7 @@ int erofs_write_file(struct erofs_inode *inode, int fd)
 	int ret;
 
 	if (!inode->i_size) {
+		DBG_BUGON(fd > 0);
 		ret = erofs_prepare_inode_buffer_for_uncompressed(inode);
 		if (ret)
 			return ret;
@@ -639,212 +873,6 @@ out:
 	return 0;
 }
 
-static bool erofs_should_use_inode_extended(struct erofs_inode *inode)
-{
-	if (cfg.c_force_inodeversion == FORCE_INODE_EXTENDED)
-		return true;
-	if (inode->i_size > UINT_MAX)
-		return true;
-	if (inode->i_uid > USHRT_MAX)
-		return true;
-	if (inode->i_gid > USHRT_MAX)
-		return true;
-	if (inode->i_nlink > USHRT_MAX)
-		return true;
-	return false;
-}
-
-static u32 erofs_new_encode_dev(dev_t dev)
-{
-	const unsigned int major = major(dev);
-	const unsigned int minor = minor(dev);
-
-	return (minor & 0xff) | (major << 8) | ((minor & ~0xff) << 12);
-}
-
-#ifdef WITH_ANDROID
-int erofs_droid_inode_fsconfig(struct erofs_inode *inode,
-			       struct stat64 *st,
-			       const char *path)
-{
-	/* filesystem_config does not preserve file type bits */
-	mode_t stat_file_type_mask = st->st_mode & S_IFMT;
-	unsigned int uid = 0, gid = 0, mode = 0;
-	const char *fspath;
-	char *decorated = NULL;
-
-	inode->capabilities = 0;
-	if (!cfg.fs_config_file && !cfg.mount_point)
-		return 0;
-
-	if (!cfg.mount_point ||
-	/* have to drop the mountpoint for rootdir of canned fsconfig */
-	    (cfg.fs_config_file && erofs_fspath(path)[0] == '\0')) {
-		fspath = erofs_fspath(path);
-	} else {
-		if (asprintf(&decorated, "%s/%s", cfg.mount_point,
-			     erofs_fspath(path)) <= 0)
-			return -ENOMEM;
-		fspath = decorated;
-	}
-
-	if (cfg.fs_config_file)
-		canned_fs_config(fspath, S_ISDIR(st->st_mode),
-				 cfg.target_out_path,
-				 &uid, &gid, &mode, &inode->capabilities);
-	else
-		fs_config(fspath, S_ISDIR(st->st_mode),
-			  cfg.target_out_path,
-			  &uid, &gid, &mode, &inode->capabilities);
-
-	erofs_dbg("/%s -> mode = 0x%x, uid = 0x%x, gid = 0x%x, "
-		  "capabilities = 0x%" PRIx64 "\n",
-		  fspath, mode, uid, gid, inode->capabilities);
-
-	if (decorated)
-		free(decorated);
-	st->st_uid = uid;
-	st->st_gid = gid;
-	st->st_mode = mode | stat_file_type_mask;
-	return 0;
-}
-#else
-static int erofs_droid_inode_fsconfig(struct erofs_inode *inode,
-				      struct stat64 *st,
-				      const char *path)
-{
-	return 0;
-}
-#endif
-
-int erofs_fill_inode(struct erofs_inode *inode,
-		     struct stat64 *st,
-		     const char *path)
-{
-	int err = erofs_droid_inode_fsconfig(inode, st, path);
-
-	if (err)
-		return err;
-	inode->i_mode = st->st_mode;
-	inode->i_uid = cfg.c_uid == -1 ? st->st_uid : cfg.c_uid;
-	inode->i_gid = cfg.c_gid == -1 ? st->st_gid : cfg.c_gid;
-	inode->i_ctime = st->st_ctime;
-	inode->i_ctime_nsec = st->st_ctim.tv_nsec;
-
-	switch (cfg.c_timeinherit) {
-	case TIMESTAMP_CLAMPING:
-		if (st->st_ctime < sbi.build_time)
-			break;
-	case TIMESTAMP_FIXED:
-		inode->i_ctime = sbi.build_time;
-		inode->i_ctime_nsec = sbi.build_time_nsec;
-	default:
-		break;
-	}
-	inode->i_nlink = 1;	/* fix up later if needed */
-
-	switch (inode->i_mode & S_IFMT) {
-	case S_IFCHR:
-	case S_IFBLK:
-	case S_IFIFO:
-	case S_IFSOCK:
-		inode->u.i_rdev = erofs_new_encode_dev(st->st_rdev);
-	case S_IFDIR:
-		inode->i_size = 0;
-		break;
-	case S_IFREG:
-	case S_IFLNK:
-		inode->i_size = st->st_size;
-		break;
-	default:
-		return -EINVAL;
-	}
-
-	inode->dev = st->st_dev;
-	inode->i_ino[1] = st->st_ino;
-
-	if (erofs_should_use_inode_extended(inode)) {
-		if (cfg.c_force_inodeversion == FORCE_INODE_COMPACT) {
-			erofs_err("file %s cannot be in compact form", path);
-			return -EINVAL;
-		}
-		inode->inode_isize = sizeof(struct erofs_inode_extended);
-	} else {
-		inode->inode_isize = sizeof(struct erofs_inode_compact);
-	}
-
-	list_add(&inode->i_hash,
-		 &inode_hashtable[(st->st_ino ^ st->st_dev) %
-				  NR_INODE_HASHTABLE]);
-	return 0;
-}
-
-struct erofs_inode *erofs_new_inode(void)
-{
-	static unsigned int counter;
-	struct erofs_inode *inode;
-
-	inode = malloc(sizeof(struct erofs_inode));
-	if (!inode)
-		return ERR_PTR(-ENOMEM);
-
-	inode->i_parent = NULL;	/* also used to indicate a new inode */
-
-	inode->i_ino[0] = counter++;	/* inode serial number */
-	inode->i_count = 1;
-
-	init_list_head(&inode->i_subdirs);
-	init_list_head(&inode->i_xattrs);
-
-	inode->idata_size = 0;
-	inode->xattr_isize = 0;
-	inode->extent_isize = 0;
-
-	inode->bh = inode->bh_inline = inode->bh_data = NULL;
-	inode->idata = NULL;
-	return inode;
-}
-
-/* get the inode from the (source) path */
-struct erofs_inode *erofs_iget_from_path(const char *path, bool is_src)
-{
-	struct stat64 st;
-	struct erofs_inode *inode;
-	int ret;
-
-	/* currently, only source path is supported */
-	if (!is_src)
-		return ERR_PTR(-EINVAL);
-
-	ret = lstat64(path, &st);
-	if (ret)
-		return ERR_PTR(-errno);
-
-	/*
-	 * lookup in hash table first, if it already exists we have a
-	 * hard-link, just return it. Also don't lookup for directories
-	 * since hard-link directory isn't allowed.
-	 */
-	if (!S_ISDIR(st.st_mode)) {
-		inode = erofs_iget(st.st_dev, st.st_ino);
-		if (inode)
-			return inode;
-	}
-
-	/* cannot find in the inode cache */
-	inode = erofs_new_inode();
-	if (IS_ERR(inode))
-		return inode;
-
-	ret = erofs_fill_inode(inode, &st, path);
-	if (ret) {
-		free(inode);
-		return ERR_PTR(ret);
-	}
-
-	return inode;
-}
-
 void erofs_fixup_meta_blkaddr(struct erofs_inode *rootdir)
 {
 	const erofs_off_t rootnid_maxoffset = 0xffff << EROFS_ISLOTBITS;
@@ -886,8 +914,9 @@ void erofs_d_invalidate(struct erofs_dentry *d)
 	erofs_iput(inode);
 }
 
-struct erofs_inode *erofs_mkfs_build_tree(struct erofs_inode *dir,
-		const char *src_path)
+/* will close fd */
+int erofs_mkfs_build_tree(struct erofs_inode *dir, const char *src_path,
+			  int fd)
 {
 	int ret;
 	DIR *_dir;
@@ -897,41 +926,42 @@ struct erofs_inode *erofs_mkfs_build_tree(struct erofs_inode *dir,
 
 	ret = erofs_prepare_xattr_ibody(dir, src_path);
 	if (ret < 0)
-		return ERR_PTR(ret);
+		goto out;
 
 	if (!S_ISDIR(dir->i_mode)) {
 		if (S_ISLNK(dir->i_mode)) {
 			char *const symlink = malloc(dir->i_size);
 
-			if (!symlink)
-				return ERR_PTR(-ENOMEM);
-			ret = readlink(src_path, symlink, dir->i_size);
+			if (!symlink) {
+				ret = -ENOMEM;
+				goto out;
+			}
+			ret = readlinkat(fd, "", symlink, dir->i_size);
 			if (ret < 0) {
 				free(symlink);
-				return ERR_PTR(-errno);
+				ret = -errno;
+				goto out;
 			}
 
 			ret = erofs_write_file_from_buffer(dir, symlink);
 			if (ret)
-				return ERR_PTR(ret);
+				goto out;
 		} else {
-			int fd = open(src_path, O_RDONLY | O_BINARY);
-			if (fd < 0)
-				return ERR_PTR(-errno);
 			ret = erofs_write_file(dir, fd);
 			if (ret)
-				return ERR_PTR(ret);
+				return ret;
 		}
 
 		erofs_write_tail_end(dir);
-		return dir;
+		return 0;
 	}
 
-	_dir = opendir(src_path);
+	_dir = fdopendir(dup(fd));
 	if (!_dir) {
 		erofs_err("%s, failed to opendir at %s: %s",
 			  __func__, src_path, erofs_strerror(errno));
-		return ERR_PTR(-errno);
+		ret = -errno;
+		goto out;
 	}
 
 	nr_subdirs = 0;
@@ -959,10 +989,6 @@ struct erofs_inode *erofs_mkfs_build_tree(struct erofs_inode *dir,
 			goto err_closedir;
 		}
 		nr_subdirs++;
-
-		/* to count i_nlink for directories */
-		d->type = (dp->d_type == DT_DIR ?
-			EROFS_FT_DIR : EROFS_FT_UNKNOWN);
 	}
 
 	if (errno) {
@@ -971,22 +997,22 @@ struct erofs_inode *erofs_mkfs_build_tree(struct erofs_inode *dir,
 	}
 	closedir(_dir);
 
-	ret = erofs_prepare_dir_file(dir, nr_subdirs);
+	ret = erofs_prepare_dir_file(dir, fd, nr_subdirs);
 	if (ret)
-		goto err;
+		goto out;
 
 	ret = erofs_prepare_inode_buffer_for_uncompressed(dir);
 	if (ret)
-		goto err;
+		goto out;
 
 	if (IS_ROOT(dir))
 		erofs_fixup_meta_blkaddr(dir);
 
 	list_for_each_entry(d, &dir->i_subdirs, d_child) {
 		char buf[PATH_MAX];
-		unsigned char ftype;
+		int d_fd;
 
-		if (is_dot_dotdot(d->name)) {
+		if (d->inode->i_nlink > 1 || is_dot_dotdot(d->name)) {
 			erofs_d_invalidate(d);
 			continue;
 		}
@@ -995,21 +1021,18 @@ struct erofs_inode *erofs_mkfs_build_tree(struct erofs_inode *dir,
 			       src_path, d->name);
 		if (ret < 0 || ret >= PATH_MAX) {
 			/* ignore the too long path */
-			goto fail;
+			goto out;
 		}
 
-		d->inode = erofs_mkfs_build_tree_from_path(dir, buf);
-		if (IS_ERR(d->inode)) {
-			ret = PTR_ERR(d->inode);
-fail:
-			d->inode = NULL;
-			d->type = EROFS_FT_UNKNOWN;
-			goto err;
-		}
+		d_fd = -1;
+		if (d->type == EROFS_FT_SYMLINK)
+			d_fd = openat(fd, d->name, O_NOFOLLOW | O_PATH);
+		else if (d->type == EROFS_FT_DIR || d->inode->i_size)
+			d_fd = openat(fd, d->name, O_RDONLY | O_BINARY);
 
-		ftype = erofs_mode_to_ftype(d->inode->i_mode);
-		DBG_BUGON(ftype == EROFS_FT_DIR && d->type != ftype);
-		d->type = ftype;
+		ret = erofs_mkfs_build_tree(d->inode, buf, d_fd);
+		if (ret)
+			goto out;
 
 		erofs_d_invalidate(d);
 		erofs_info("add file %s/%s (nid %llu, type %d)",
@@ -1018,34 +1041,33 @@ fail:
 	}
 	erofs_write_dir_file(dir);
 	erofs_write_tail_end(dir);
-	return dir;
+	goto out;
 
 err_closedir:
 	closedir(_dir);
-err:
-	return ERR_PTR(ret);
+out:
+	close(fd);
+	return ret;
 }
 
-struct erofs_inode *erofs_mkfs_build_tree_from_path(struct erofs_inode *parent,
-						    const char *path)
+struct erofs_inode *erofs_mkfs_build_tree_from_path(const char *path)
 {
-	struct erofs_inode *const inode = erofs_iget_from_path(path, true);
+	int ret, root_fd;
+	struct erofs_inode *const inode =
+		erofs_iget_from_path(AT_FDCWD, path, true);
 
 	if (IS_ERR(inode))
 		return inode;
 
-	/* a hardlink to the existed inode */
-	if (inode->i_parent) {
-		++inode->i_nlink;
-		return inode;
-	}
+	inode->i_parent = inode;
 
-	/* a completely new inode is found */
-	if (parent)
-		inode->i_parent = parent;
-	else
-		inode->i_parent = inode;	/* rootdir mark */
+	root_fd = open(path, O_RDONLY | O_NOFOLLOW | O_BINARY);
+	if (root_fd < 0)
+		return ERR_PTR(-errno);
+	ret = erofs_mkfs_build_tree(inode, path, root_fd);
+	if (ret)
+		return ERR_PTR(ret);
 
-	return erofs_mkfs_build_tree(inode, path);
+	return inode;
 }
 
