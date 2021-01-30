@@ -36,6 +36,7 @@ _scratch_mkfs -Eforce-inode-compact $localdir || _fail "failed to mkfs"
 
 # verify the uncompressed image
 _require_erofs
+_require_fssum
 
 _scratch_mount 2>>$seqres.full
 

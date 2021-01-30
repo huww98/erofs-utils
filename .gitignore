@@ -29,4 +29,4 @@ libtool
 stamp-h
 stamp-h1
 
-*/tests/results/
+**/tests/results/
