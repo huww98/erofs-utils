@@ -7,4 +7,5 @@ SUBDIRS = man lib mkfs
 if ENABLE_FUSE
 SUBDIRS += fuse
 endif
+SUBDIRS += tests
 

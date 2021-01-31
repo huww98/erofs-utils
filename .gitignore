@@ -11,6 +11,7 @@
 *.so
 *.so.dbg
 *.tar.*
+!.github
 
 #
 # Generated files
@@ -28,3 +29,4 @@ libtool
 stamp-h
 stamp-h1
 
+**/tests/results/

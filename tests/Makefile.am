@@ -1,0 +1,95 @@
+# SPDX-License-Identifier: GPL-2.0+
+# Makefile.am
+
+AUTOMAKE_OPTIONS = serial-tests
+SUBDIRS = src
+
+TESTS =
+TESTS_OUT =
+
+TESTS_ENVIRONMENT = \
+	if [ -z $$SCRATCH_MNT ]; then \
+		export SCRATCH_MNT=/tmp/erofstest;	\
+		mkdir -p $$SCRATCH_MNT 2>/dev/null; \
+	fi; \
+	if [ -z $$RESULT_DIR ]; then \
+		export RESULT_DIR=`pwd`/results;	\
+		mkdir -p $$RESULT_DIR 2>/dev/null; \
+	fi; \
+	[ -z $$MKFS_EROFS_PROG ] && export MKFS_EROFS_PROG=../mkfs/mkfs.erofs; \
+	[ -z $$EROFSFUSE_PROG ] && export EROFSFUSE_PROG=../fuse/erofsfuse;
+
+if ENABLE_LZ4
+TESTS_ENVIRONMENT += export lz4_on=1;
+endif
+if ENABLE_LZ4HC
+TESTS_ENVIRONMENT += export lz4hc_on=1;
+endif
+
+# 001 - test if unknown algorithm is specificed
+TESTS += erofs/001
+TESTS_OUT += erofs/001-out
+
+# 002 - mkfs & test short symlink (fast symlink)
+TESTS += erofs/002
+TESTS_OUT += erofs/002-out
+
+# 003 - mkfs & test long symlink (non-fast symlink)
+TESTS += erofs/003
+TESTS_OUT += erofs/003-out
+
+# 004 - mkfs & test character/block device
+TESTS += erofs/004
+TESTS_OUT += erofs/004-out
+
+# 005 - mkfs & test pipe
+TESTS += erofs/005
+TESTS_OUT += erofs/005-out
+
+# 006 - verify the uncompressed image
+TESTS += erofs/006
+TESTS_OUT += erofs/006-out
+
+# 007 - check for bad lz4 versions
+TESTS += erofs/007
+TESTS_OUT += erofs/007-out
+
+# 008 - verify lz4 compressed image
+TESTS += erofs/008
+TESTS_OUT += erofs/008-out
+
+# 009 - verify lz4hc compressed image
+TESTS += erofs/009
+TESTS_OUT += erofs/009-out
+
+# 010 - (legacy image) verify lz4 compressed image
+TESTS += erofs/010
+TESTS_OUT += erofs/010-out
+
+# 011 - (legacy image) verify lz4hc compressed image
+TESTS += erofs/011
+TESTS_OUT += erofs/011-out
+
+# 012 - check the hard-link functionality
+TESTS += erofs/012
+TESTS_OUT += erofs/012-out
+
+# 013 - check if hardlinked directories are allowed
+TESTS += erofs/013
+TESTS_OUT += erofs/013-out
+
+# 014 - check if cross-device submounts are handled properly
+TESTS += erofs/014
+TESTS_OUT += erofs/014-out
+
+# 015 - battach on full buffer block
+TESTS += erofs/015
+TESTS_OUT += erofs/015-out
+
+dist_check_SCRIPTS = common/rc $(TESTS)
+dist_check_DATA = $(TESTS_OUT)
+
+clean-local: clean-local-check
+.PHONY: clean-local-check
+clean-local-check:
+	-rm -rf results
