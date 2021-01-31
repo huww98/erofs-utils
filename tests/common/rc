@@ -109,8 +109,8 @@ _scratch_do_mkfs()
 {
 	_require_mkfs
 
-	local mkfs_cmd=$1
-	local mkfs_filter=$2
+	local mkfs_cmd="$1"
+	local mkfs_filter="$2"
 	shift 2
 	local extra_mkfs_options="$*"
 	local mkfs_status
@@ -131,17 +131,9 @@ _scratch_do_mkfs()
 _scratch_mkfs()
 {
 	local mkfs_cmd="$MKFS_EROFS_PROG"
-	local mkfs_filter="true"
+	local mkfs_filter="cat"
 
-	_scratch_do_mkfs "$mkfs_cmd" "$mkfs_filter" $* 2>$tmp.mkfserr 1>$tmp.mkfsstd
-	mkfs_status=$?
-
-	# output mkfs stdout and stderr
-	cat $tmp.mkfsstd
-	cat $tmp.mkfserr >&2
-	rm -f $tmp.mkfserr $tmp.mkfsstd
-
-	return $mkfs_status
+	_scratch_do_mkfs "$mkfs_cmd" "$mkfs_filter" $*
 }
 
 _scratch_mount_options()
