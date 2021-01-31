@@ -25,6 +25,9 @@ endif
 if ENABLE_LZ4HC
 TESTS_ENVIRONMENT += export lz4hc_on=1;
 endif
+if ENABLE_LIBURING
+TESTS_ENVIRONMENT += export io_uring_on=1;
+endif
 
 # 001 - test if unknown algorithm is specificed
 TESTS += erofs/001

@@ -94,9 +94,21 @@ _require_erofs()
 		_notrun "this test requires EROFS kernel support"
 }
 
+_require_mkfs()
+{
+	if [ "$io_uring_on" ]; then
+		grep -q io_uring_setup /proc/kallsyms ||
+			_notrun "this test requires io_uring kernel support"
+		ulimit -l 16384 2>/dev/null ||
+			_notrun "'ulimit -l': `ulimit -l` too small"
+	fi
+}
+
 # Do the actual mkfs work on SCRATCH_DEV.
 _scratch_do_mkfs()
 {
+	_require_mkfs
+
 	local mkfs_cmd=$1
 	local mkfs_filter=$2
 	shift 2

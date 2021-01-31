@@ -29,6 +29,8 @@ rm -rf $localdir
 [ "$(id -u)" = "0" ] || \
 	_notrun "This testcase must be run as root, skipped."
 
+_require_mkfs
+
 tds="$localdir/s"
 tmg1="$localdir/s1.img"
 tmg2="$localdir/s2.img"

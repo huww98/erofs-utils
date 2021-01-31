@@ -22,7 +22,6 @@ jobs:
     - name: check env
       run: |
         uname -a
-        sudo ulimit -l 16384
         ulimit -a
     - uses: actions/checkout@v2
     - name: install dependencies
@@ -62,6 +61,8 @@ jobs:
       run: FSTYP=erofsfuse make check
     - name: make check (root)
       run: sudo make check
+    - name: make check (root, fuse)
+      run: sudo FSTYP=erofsfuse make check
     - uses: actions/upload-artifact@v2
       if: ${{ !cancelled() }}
       with:
