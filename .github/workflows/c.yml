@@ -10,12 +10,20 @@ jobs:
 
     runs-on: ubuntu-20.04
     strategy:
+      fail-fast: false
       matrix:
         lz4: [no, v1.9.3]
+        io_uring: [liburing-0.7]
+        include:
+        - lz4: v1.9.3
+          io_uring: no
 
     steps:
-    - name: check kernel version
-      run: uname -a
+    - name: check env
+      run: |
+        uname -a
+        sudo ulimit -l 16384
+        ulimit -a
     - uses: actions/checkout@v2
     - name: install dependencies
       run: sudo apt-get install uuid-dev libfuse-dev
@@ -28,10 +36,24 @@ jobs:
         make
         sudo make install
         sudo ldconfig
+    - name: install liburing
+      if: ${{ startsWith(matrix.io_uring, 'liburing') }}
+      run: |
+        cd
+        git clone --depth=1 --branch=${{ matrix.io_uring }} https://github.com/axboe/liburing.git
+        cd liburing
+        make
+        sudo make install
+        sudo ldconfig
     - name: autogen
       run: ./autogen.sh
     - name: configure
-      run: ./configure --enable-fuse
+      run: |
+        ARGS=(--enable-fuse)
+        if [ ${{ matrix.io_uring }} != no ]; then
+          ARGS+=(--with-uring)
+        fi
+        ./configure "${ARGS[@]}"
     - name: make
       run: make
     - name: make check
@@ -43,7 +65,7 @@ jobs:
     - uses: actions/upload-artifact@v2
       if: ${{ !cancelled() }}
       with:
-        name: test-results-lz4-${{ matrix.lz4 }}
+        name: test-results_lz4-${{ matrix.lz4 }}_io-uring-${{ matrix.io_uring }}
         path: tests/results
     - name: make distcheck
       run: make distcheck
